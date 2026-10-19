@@ -1,0 +1,20 @@
+{
+  "name": "SJSU Beach Volleyball",
+  "short_name": "SJSU BVlog",
+  "description": "Beach volleyball match tracking and team statistics for SJSU.",
+  "lang": "en-US",
+  "start_url": "./bvlog-index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#0038a8",
+  "icons": [
+    {
+      "src": "San_Jose_State_Spartans_logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

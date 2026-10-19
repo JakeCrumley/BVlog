@@ -2091,6 +2091,7 @@ function renderHistoryScreen() {
   const makeFilterField = (labelText, control) => {
     const field = document.createElement('label');
     field.className = 'history-filter-field';
+    if (control.type === 'date') field.classList.add('date-filter-field');
     field.textContent = labelText;
     field.appendChild(control);
     return field;
@@ -2375,6 +2376,7 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
   const makeField = (labelText, control) => {
     const field = document.createElement('label');
     field.className = 'history-filter-field';
+    if (control.type === 'date') field.classList.add('date-filter-field');
     field.textContent = labelText;
     field.appendChild(control);
     return field;
@@ -2527,6 +2529,7 @@ function renderTeamStatsFilterPanel(filters, onChange) {
   const makeField = (labelText, control) => {
     const field = document.createElement('label');
     field.className = 'history-filter-field';
+    if (control.type === 'date') field.classList.add('date-filter-field');
     field.textContent = labelText;
     field.appendChild(control);
     return field;

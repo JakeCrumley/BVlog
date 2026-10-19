@@ -1526,9 +1526,17 @@ h1 {
     width: 100%;
     min-width: 0;
     max-width: 100%;
+    box-sizing: border-box;
+    min-height: 42px;
+    height: 42px;
     font-size: 16px;
-    padding-left: 7px;
-    padding-right: 7px;
+    padding: 6px 4px;
+  }
+
+  /* Date controls need the full filter row on narrow screens. This avoids
+     native iOS date-picker controls overflowing a half-width grid cell. */
+  .date-filter-field {
+    grid-column: 1 / -1;
   }
 
   .live-stats-summary {
@@ -1612,23 +1620,65 @@ h1 {
 
   .summary-section {
     margin-top: 22px;
+    overflow-x: visible;
+  }
+
+  .player-stats-section {
+    overflow-x: visible;
   }
 
   .stats-table {
-    min-width: 560px;
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
   }
 
   .stats-table.player-stats-table {
-    min-width: 320px;
+    min-width: 0;
   }
 
   .stats-table.player-comparison-table {
-    min-width: 480px;
+    min-width: 0;
   }
 
   .stats-table th,
   .stats-table td {
-    padding: 9px 8px;
+    padding: 6px 3px;
+    font-size: 0.68rem;
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .stats-table.player-stats-table th:first-child,
+  .stats-table.player-stats-table td:first-child {
+    width: 70%;
+  }
+
+  .stats-table.player-comparison-table th:first-child,
+  .stats-table.player-comparison-table td:first-child {
+    width: 42%;
+  }
+
+  .stats-table.team-comparison-table th:first-child,
+  .stats-table.team-comparison-table td:first-child {
+    width: 40%;
+  }
+
+  .stats-table.stat-breakdown-table th:first-child,
+  .stats-table.stat-breakdown-table td:first-child {
+    width: 9%;
+  }
+
+  .stats-table.stat-breakdown-table th:nth-child(2),
+  .stats-table.stat-breakdown-table td:nth-child(2) {
+    width: 31%;
+  }
+
+  .stats-table.stat-breakdown-table th:nth-child(3),
+  .stats-table.stat-breakdown-table td:nth-child(3) {
+    width: 17%;
   }
 
   .event-log-item {

@@ -1,6 +1,6 @@
 const BVLOG_CACHE_NAME = 'bvlog-shell-v1';
 const BVLOG_APP_SHELL = [
-  './bvlog-index.html',
+  './index.html',
   './manifest.webmanifest',
   './css/bvlog-style.css',
   './js/bvlog-model.js',
@@ -51,7 +51,7 @@ self.addEventListener('fetch', (event) => {
             }
             return response;
           })
-          .catch(() => caches.match(request).then((cached) => cached || caches.match('./bvlog-index.html')))
+          .catch(() => caches.match(request).then((cached) => cached || caches.match('./index.html')))
       : caches.match(request).then((cached) => cached || fetch(request).then((response) => {
           if (response.ok) {
             const copy = response.clone();

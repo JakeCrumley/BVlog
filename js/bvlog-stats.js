@@ -58,8 +58,16 @@ function computeRawCounts(events, who) {
     // "what % of our attacks were each type," a different question
     // than the attempt-based efficiency stats.
     attackTypes: { hard_driven: 0, shot: 0, freeball: 0, totalAttacks: 0 },
-    // Kill quality tally, combined across ace + Sideout kill + Transition kill.
-    killQuality: { no_contact: 0, semi_contact: 0, full_contact: 0, opponent_error: 0, totalKills: 0 },
+    // Kill quality tally. The original combined fields are retained for
+    // backwards-compatible raw-stat consumers, while the separated attack
+    // and ace fields keep Quality Kill% from being diluted by aces.
+    killQuality: {
+      no_contact: 0, semi_contact: 0, full_contact: 0, opponent_error: 0, totalKills: 0,
+      attackNoContact: 0, attackSemiContact: 0, attackFullContact: 0,
+      attackOpponentError: 0, attackTotalKills: 0,
+      aceNoContact: 0, aceSemiContact: 0, aceFullContact: 0,
+      aceOpponentError: 0, aceTotal: 0,
+    },
   };
 
   for (const e of events) {
@@ -88,6 +96,11 @@ function computeRawCounts(events, who) {
       if (e.action === 'kill' && e.killQuality) {
         if (e.killQuality in counts.killQuality) counts.killQuality[e.killQuality]++;
         if (e.killQuality !== KILL_QUALITIES.OPPONENT_ERROR) counts.killQuality.totalKills++;
+        if (e.killQuality === KILL_QUALITIES.NO_CONTACT) counts.killQuality.attackNoContact++;
+        if (e.killQuality === KILL_QUALITIES.SEMI_CONTACT) counts.killQuality.attackSemiContact++;
+        if (e.killQuality === KILL_QUALITIES.FULL_CONTACT) counts.killQuality.attackFullContact++;
+        if (e.killQuality === KILL_QUALITIES.OPPONENT_ERROR) counts.killQuality.attackOpponentError++;
+        if (e.killQuality !== KILL_QUALITIES.OPPONENT_ERROR) counts.killQuality.attackTotalKills++;
       }
       continue;
     }
@@ -95,6 +108,11 @@ function computeRawCounts(events, who) {
     if (e.phase === PHASES.SERVE && e.action === 'ace' && e.killQuality) {
       if (e.killQuality in counts.killQuality) counts.killQuality[e.killQuality]++;
       counts.killQuality.totalKills++;
+      if (e.killQuality === KILL_QUALITIES.NO_CONTACT) counts.killQuality.aceNoContact++;
+      if (e.killQuality === KILL_QUALITIES.SEMI_CONTACT) counts.killQuality.aceSemiContact++;
+      if (e.killQuality === KILL_QUALITIES.FULL_CONTACT) counts.killQuality.aceFullContact++;
+      if (e.killQuality === KILL_QUALITIES.OPPONENT_ERROR) counts.killQuality.aceOpponentError++;
+      if (e.killQuality !== KILL_QUALITIES.OPPONENT_ERROR) counts.killQuality.aceTotal++;
     }
 
     if (e.phase === PHASES.SETTING) {
@@ -178,11 +196,15 @@ function computeStats(events, who) {
   // --- New formulas ---
   const avgSetQuality = safeDiv(c.setting.totalValue, c.setting.valuedAttempts);
 
-  // Quality Kill% denominator = all logged kills (ace + sideout kill +
-  // transition kill) that were tagged with a kill quality.
+  // Quality Kill% is intentionally attack-only. Aces have their own quality
+  // metric so a strong serving night cannot change attack quality.
   const qualityKillPct = safeDiv(
-    c.killQuality.no_contact + c.killQuality.semi_contact,
-    c.killQuality.totalKills
+    c.killQuality.attackNoContact + c.killQuality.attackSemiContact,
+    c.killQuality.attackTotalKills
+  );
+  const qualityAcePct = safeDiv(
+    c.killQuality.aceNoContact + c.killQuality.aceSemiContact,
+    c.killQuality.aceTotal
   );
 
   const hardDrivenPct = safeDiv(c.attackTypes.hard_driven, c.attackTypes.totalAttacks);
@@ -207,6 +229,7 @@ function computeStats(events, who) {
     totalPointsGained,
     avgSetQuality,
     qualityKillPct,
+    qualityAcePct,
     hardDrivenPct,
     shotPct,
     freeballPct,
@@ -222,6 +245,417 @@ function computeGameStats(game, scope = 'match') {
     team:    computeStats(events, 'team'),
     playerA: computeStats(events, 'A'),
     playerB: computeStats(events, 'B'),
+  };
+}
+
+// ----------------------------
+// Statistical breakdowns
+// ----------------------------
+// These reports intentionally work from the event stream instead of from the
+// already-aggregated stat line. That preserves the context around an event —
+// for example, which pass led to a set, or which set quality led to an attack.
+
+function breakdownQualityLabel(value) {
+  return {
+    [KILL_QUALITIES.NO_CONTACT]: 'No-contact',
+    [KILL_QUALITIES.SEMI_CONTACT]: 'Semi-contact',
+    [KILL_QUALITIES.FULL_CONTACT]: 'Full-contact',
+    [KILL_QUALITIES.OPPONENT_ERROR]: 'Opponent error',
+  }[value] || value;
+}
+
+function breakdownAttackLabel(value) {
+  return {
+    [ATTACK_TYPES.HARD_DRIVEN]: 'Hard-driven',
+    [ATTACK_TYPES.SHOT]: 'Shot',
+    [ATTACK_TYPES.FREEBALL]: 'Free ball',
+  }[value] || value;
+}
+
+function breakdownScopeEvents(game, scope) {
+  return getGameEventsForScope(game, scope).filter((event) => event?.type !== 'server_swap');
+}
+
+function breakdownContexts(games, playerId, scope) {
+  const contexts = [];
+  for (const game of games || []) {
+    if (!game?.isComplete) continue;
+    const playerSide = playerId
+      ? game.playerAId === playerId ? 'A' : game.playerBId === playerId ? 'B' : null
+      : null;
+    if (playerId && !playerSide) continue;
+
+    const excludedSides = new Set();
+    const lookupPlayer = typeof findPlayerById === 'function' ? findPlayerById : () => null;
+    if (!playerId && lookupPlayer(game.playerAId)?.practicePlayer) excludedSides.add('A');
+    if (!playerId && lookupPlayer(game.playerBId)?.practicePlayer) excludedSides.add('B');
+    const events = breakdownScopeEvents(game, scope);
+    const owned = (event) => {
+      if (playerId) return event.player === playerSide;
+      return !event.player || !excludedSides.has(event.player);
+    };
+    const pointGroups = new Map();
+    for (const event of events) {
+      const key = `${event.setNumber || 1}:${event.pointNumber ?? 'unknown'}`;
+      if (!pointGroups.has(key)) pointGroups.set(key, []);
+      pointGroups.get(key).push(event);
+    }
+    contexts.push({ game, events, owned, pointGroups });
+  }
+  return contexts;
+}
+
+function breakdownIsAttack(event, phases = null) {
+  return Boolean(event)
+    && (!phases || phases.includes(event.phase))
+    && (event.action === 'kill' || event.action === 'error'
+      || event.action === 'blocked' || event.action === 'continue')
+    && (event.phase === PHASES.SIDEOUT || event.phase === PHASES.TRANSITION);
+}
+
+function breakdownAttackAction(event) {
+  return event?.action === 'kill' && event.killQuality === KILL_QUALITIES.OPPONENT_ERROR
+    ? 'continue'
+    : event?.action;
+}
+
+function breakdownAttempt(event) {
+  return breakdownIsAttack(event) && isAttackAttempt(
+    breakdownAttackAction(event), event.attackType, event.attackSource,
+  );
+}
+
+function breakdownFindPrior(events, index, predicate) {
+  const target = events[index];
+  for (let i = index - 1; i >= 0; i--) {
+    if (!breakdownSamePoint(target, events[i])) break;
+    if (predicate(events[i])) return events[i];
+  }
+  return null;
+}
+
+function breakdownFindNext(events, index, predicate) {
+  const target = events[index];
+  for (let i = index + 1; i < events.length; i++) {
+    if (!breakdownSamePoint(target, events[i])) break;
+    if (predicate(events[i])) return events[i];
+  }
+  return null;
+}
+
+function breakdownSamePoint(first, second) {
+  if (!first || !second) return false;
+  const firstPoint = first.pointNumber;
+  const secondPoint = second.pointNumber;
+  if (firstPoint === undefined || firstPoint === null || secondPoint === undefined || secondPoint === null) {
+    return true;
+  }
+  return Number(first.setNumber || 1) === Number(second.setNumber || 1)
+    && Number(firstPoint) === Number(secondPoint);
+}
+
+function breakdownPriorSet(events, index) {
+  return breakdownFindPrior(events, index, (event) => event.phase === PHASES.SETTING);
+}
+
+function breakdownPriorPass(events, index) {
+  return breakdownFindPrior(events, index, (event) => event.phase === PHASES.PASSING);
+}
+
+function breakdownPriorDefense(events, index) {
+  return breakdownFindPrior(events, index, (event) => event.phase === PHASES.DEFENSE);
+}
+
+function breakdownPassSource(event) {
+  if (!event) return null;
+  if (event.action === 'in_system') return 'in_system';
+  if (event.action === 'oos' || event.action === 'return') return 'oos';
+  return null;
+}
+
+function breakdownDefenseSource(event) {
+  if (!event) return null;
+  if (event.action === 'receive') return 'freeball';
+  if (event.action === 'dig' || event.action === 'dig_return') return 'dig';
+  return null;
+}
+
+function breakdownAttackTypeRows(contexts, phases) {
+  const types = [ATTACK_TYPES.HARD_DRIVEN, ATTACK_TYPES.SHOT, ATTACK_TYPES.FREEBALL];
+  const totals = new Map(types.map((type) => [type, {
+    attempts: 0, kills: 0, errors: 0, blocked: 0, continues: 0,
+    noContact: 0, semiContact: 0, fullContact: 0, opponentError: 0, qualityTotal: 0,
+  }]));
+
+  for (const context of contexts) {
+    context.events.forEach((event) => {
+      if (!context.owned(event) || !breakdownIsAttack(event, phases) || !totals.has(event.attackType)) return;
+      const row = totals.get(event.attackType);
+      const action = breakdownAttackAction(event);
+      if (breakdownAttempt(event)) row.attempts++;
+      if (action === 'kill') row.kills++;
+      if (action === 'error') row.errors++;
+      if (action === 'blocked') row.blocked++;
+      if (action === 'continue') row.continues++;
+      if (event.killQuality && event.killQuality !== KILL_QUALITIES.OPPONENT_ERROR) {
+        row.qualityTotal++;
+        if (event.killQuality === KILL_QUALITIES.NO_CONTACT) row.noContact++;
+        if (event.killQuality === KILL_QUALITIES.SEMI_CONTACT) row.semiContact++;
+        if (event.killQuality === KILL_QUALITIES.FULL_CONTACT) row.fullContact++;
+      } else if (event.killQuality === KILL_QUALITIES.OPPONENT_ERROR) {
+        row.opponentError++;
+        row.qualityTotal++;
+      }
+    });
+  }
+
+  return types.map((type) => {
+    const row = totals.get(type);
+    return {
+      label: breakdownAttackLabel(type),
+      attempts: row.attempts,
+      kills: row.kills,
+      errors: row.errors,
+      blocked: row.blocked,
+      continues: row.continues,
+      efficiency: safeDiv(row.kills, row.attempts),
+      noContact: safeDiv(row.noContact, row.qualityTotal),
+      semiContact: safeDiv(row.semiContact, row.qualityTotal),
+      fullContact: safeDiv(row.fullContact, row.qualityTotal),
+      opponentError: safeDiv(row.opponentError, row.qualityTotal),
+    };
+  });
+}
+
+function breakdownAttackSourceRows(contexts, phases, sourceType) {
+  const sources = sourceType === 'pass'
+    ? [['in_system', 'In-system'], ['oos', 'OOS']]
+    : [['freeball', 'Freeball receive'], ['dig', 'Dig']];
+  const totals = new Map(sources.map(([key]) => [key, { attempts: 0, kills: 0 }]));
+  for (const context of contexts) {
+    context.events.forEach((event, index) => {
+      if (!context.owned(event) || !breakdownIsAttack(event, phases)) return;
+      const prior = sourceType === 'pass'
+        ? breakdownPassSource(breakdownPriorPass(context.events, index))
+        : breakdownDefenseSource(breakdownPriorDefense(context.events, index));
+      if (!totals.has(prior)) return;
+      const row = totals.get(prior);
+      if (breakdownAttempt(event)) row.attempts++;
+      if (breakdownAttackAction(event) === 'kill') row.kills++;
+    });
+  }
+  const totalKills = [...totals.values()].reduce((sum, row) => sum + row.kills, 0);
+  return sources.map(([key, label]) => ({
+    label,
+    attempts: totals.get(key).attempts,
+    kills: totals.get(key).kills,
+    efficiency: safeDiv(totals.get(key).kills, totals.get(key).attempts),
+    killShare: safeDiv(totals.get(key).kills, totalKills),
+  }));
+}
+
+function breakdownOptionRows(contexts, phases) {
+  const row = { attempts: 0, kills: 0, errors: 0 };
+  for (const context of contexts) {
+    context.events.forEach((event, index) => {
+      if (!context.owned(event) || !breakdownIsAttack(event, phases)) return;
+      const prior = breakdownPriorSet(context.events, index);
+      if (prior?.action !== 'option') return;
+      if (breakdownAttempt(event)) row.attempts++;
+      if (breakdownAttackAction(event) === 'kill') row.kills++;
+      if (breakdownAttackAction(event) === 'error') row.errors++;
+    });
+  }
+  return [{ label: 'Option attacks', ...row, efficiency: safeDiv(row.kills, row.attempts) }];
+}
+
+function breakdownSetQualityRows(contexts, phases) {
+  const totals = new Map(['1', '2', '3'].map((quality) => [quality, { attempts: 0, kills: 0 }]));
+  for (const context of contexts) {
+    context.events.forEach((event, index) => {
+      if (!context.owned(event) || !breakdownIsAttack(event, phases)) return;
+      const prior = breakdownPriorSet(context.events, index);
+      const quality = prior && ['1', '2', '3'].includes(String(prior.action)) ? String(prior.action) : null;
+      if (!quality) return;
+      const row = totals.get(quality);
+      if (breakdownAttempt(event)) row.attempts++;
+      if (breakdownAttackAction(event) === 'kill') row.kills++;
+    });
+  }
+  return ['1', '2', '3'].map((quality) => ({
+    label: `Set quality ${quality}`,
+    attempts: totals.get(quality).attempts,
+    kills: totals.get(quality).kills,
+    efficiency: safeDiv(totals.get(quality).kills, totals.get(quality).attempts),
+  }));
+}
+
+function breakdownContinueRows(contexts, phases) {
+  let continues = 0;
+  let opponentKills = 0;
+  for (const context of contexts) {
+    for (const events of context.pointGroups.values()) {
+      events.forEach((event, index) => {
+        if (!context.owned(event) || !phases.includes(event.phase) || event.action !== 'continue') return;
+        continues++;
+        const nextPointEnd = breakdownFindNext(events, index, (candidate) =>
+          candidate.phase === PHASES.DEFENSE && ['opponent_kill', 'opponent_error', 'block_kill', 'block_error', 'dig_error'].includes(candidate.action));
+        if (nextPointEnd?.action === 'opponent_kill') opponentKills++;
+      });
+    }
+  }
+  return [{ label: 'Opponent transition kills after continue', continues, opponentKills, percentage: safeDiv(opponentKills, continues) }];
+}
+
+function breakdownSettingRows(contexts, sourceType) {
+  const sources = sourceType === 'pass'
+    ? [['in_system', 'In-system'], ['oos', 'OOS']]
+    : [['dig', 'Dig'], ['freeball', 'Freeball']];
+  const totals = new Map(sources.map(([key]) => [key, { sets: 0, totalQuality: 0, one: 0, two: 0, three: 0 }]));
+  for (const context of contexts) {
+    context.events.forEach((event, index) => {
+      if (!context.owned(event) || event.phase !== PHASES.SETTING) return;
+      const quality = setValue(event.action);
+      if (quality === null) return;
+      const prior = sourceType === 'pass'
+        ? breakdownPassSource(breakdownPriorPass(context.events, index))
+        : breakdownDefenseSource(breakdownPriorDefense(context.events, index));
+      if (!totals.has(prior)) return;
+      const row = totals.get(prior);
+      row.sets++;
+      row.totalQuality += quality;
+      if (quality === 1) row.one++;
+      if (quality === 2) row.two++;
+      if (quality === 3) row.three++;
+    });
+  }
+  return sources.map(([key, label]) => {
+    const row = totals.get(key);
+    return {
+      label,
+      sets: row.sets,
+      average: safeDiv(row.totalQuality, row.sets),
+      quality1: safeDiv(row.one, row.sets),
+      quality2: safeDiv(row.two, row.sets),
+      quality3: safeDiv(row.three, row.sets),
+    };
+  });
+}
+
+function breakdownKillAfterSetRows(contexts) {
+  const totals = new Map(['1', '2', '3'].map((quality) => [quality, { attempts: 0, kills: 0 }]));
+  for (const context of contexts) {
+    context.events.forEach((event, index) => {
+      if (!context.owned(event) || !breakdownIsAttack(event)) return;
+      const prior = breakdownPriorSet(context.events, index);
+      const quality = prior && ['1', '2', '3'].includes(String(prior.action)) ? String(prior.action) : null;
+      if (!quality) return;
+      const row = totals.get(quality);
+      if (breakdownAttempt(event)) row.attempts++;
+      if (breakdownAttackAction(event) === 'kill') row.kills++;
+    });
+  }
+  return ['1', '2', '3'].map((quality) => ({
+    label: `Set quality ${quality}`,
+    attempts: totals.get(quality).attempts,
+    kills: totals.get(quality).kills,
+    killPct: safeDiv(totals.get(quality).kills, totals.get(quality).attempts),
+  }));
+}
+
+function statisticalBreakdownColumns(kind) {
+  const columns = {
+    attack: [
+      ['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'],
+      ['Errors', 'errors', 'number'], ['Blocked', 'blocked', 'number'],
+      ['Continues', 'continues', 'number'], ['Eff%', 'efficiency', 'percent'],
+      ['No-contact%', 'noContact', 'percent'], ['Semi-contact%', 'semiContact', 'percent'],
+      ['Full-contact%', 'fullContact', 'percent'], ['Opponent error%', 'opponentError', 'percent'],
+    ],
+    sourceAttack: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Kill share%', 'killShare', 'percent'], ['Eff%', 'efficiency', 'percent']],
+    option: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Errors', 'errors', 'number'], ['Eff%', 'efficiency', 'percent']],
+    setQuality: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Eff%', 'efficiency', 'percent']],
+    setting: [['Sets', 'sets', 'number'], ['Average quality', 'average', 'decimal'], ['Quality 1%', 'quality1', 'percent'], ['Quality 2%', 'quality2', 'percent'], ['Quality 3%', 'quality3', 'percent']],
+    killAfterSet: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Kill%', 'killPct', 'percent']],
+    continue: [['Continues', 'continues', 'number'], ['Opponent transition kills', 'opponentKills', 'number'], ['Kill%', 'percentage', 'percent']],
+    serving: [['Aces', 'aces', 'number'], ['% of aces', 'percentage', 'percent']],
+    servingResult: [['Serves', 'serves', 'number'], ['Opponent sideout kills', 'opponentKills', 'number'], ['Kill%', 'percentage', 'percent']],
+    points: [['Points gained', 'value', 'number']],
+  };
+  return (columns[kind] || []).map(([label, key, format]) => ({ label, key, format }));
+}
+
+function computeStatisticalBreakdown(games, tab = 'serving', playerId = '', scope = 'match') {
+  const contexts = breakdownContexts(games, playerId, scope);
+  const sections = [];
+  const add = (title, kind, rows) => sections.push({ title, columns: statisticalBreakdownColumns(kind), rows });
+  const attackPhases = tab === 'sideout' ? [PHASES.SIDEOUT]
+    : tab === 'transition' ? [PHASES.TRANSITION]
+    : [PHASES.SIDEOUT, PHASES.TRANSITION];
+
+  if (tab === 'serving') {
+    const qualityValues = Object.values(KILL_QUALITIES).map((quality) => ({ label: breakdownQualityLabel(quality), aces: 0 }));
+    const qualityMap = new Map(Object.values(KILL_QUALITIES).map((quality, index) => [quality, qualityValues[index]]));
+    let totalAces = 0;
+    let totalServes = 0;
+    const resultTotals = new Map([['ko', { serves: 0, opponentKills: 0 }], ['in_system', { serves: 0, opponentKills: 0 }]]);
+    for (const context of contexts) {
+      context.events.forEach((event) => {
+        if (!context.owned(event) || event.phase !== PHASES.SERVE) return;
+        totalServes++;
+        if (event.action === 'ace') {
+          totalAces++;
+          if (qualityMap.has(event.killQuality)) qualityMap.get(event.killQuality).aces++;
+        }
+      });
+      for (const events of context.pointGroups.values()) {
+        events.forEach((event, index) => {
+          if (!context.owned(event) || event.phase !== PHASES.SERVE || !resultTotals.has(event.action)) return;
+          const row = resultTotals.get(event.action);
+          row.serves++;
+          const nextEnd = breakdownFindNext(events, index, (candidate) => candidate.phase === PHASES.DEFENSE && ['opponent_kill', 'opponent_error', 'block_kill', 'block_error', 'dig_error'].includes(candidate.action));
+          if (nextEnd?.action === 'opponent_kill') row.opponentKills++;
+        });
+      }
+    }
+    add('Opponent contact on aces', 'serving', qualityValues.map((row) => ({ ...row, percentage: safeDiv(row.aces, totalAces) })));
+    add('Opponent sideout kills after serve result', 'servingResult', [
+      { label: 'KO', ...resultTotals.get('ko'), percentage: safeDiv(resultTotals.get('ko').opponentKills, resultTotals.get('ko').serves) },
+      { label: 'In-system', ...resultTotals.get('in_system'), percentage: safeDiv(resultTotals.get('in_system').opponentKills, resultTotals.get('in_system').serves) },
+    ]);
+    sections[0].totalAces = totalAces;
+    sections[1].totalServes = totalServes;
+  } else if (tab === 'sideout' || tab === 'transition' || tab === 'allAttacking') {
+    add('Attack type performance', 'attack', breakdownAttackTypeRows(contexts, attackPhases));
+    add('Opponent transition kills after continue', 'continue', breakdownContinueRows(contexts, attackPhases));
+    if (tab === 'sideout') add('Sideout attack source', 'sourceAttack', breakdownAttackSourceRows(contexts, attackPhases, 'pass'));
+    if (tab === 'transition') add('Transition attack source', 'sourceAttack', breakdownAttackSourceRows(contexts, attackPhases, 'defense'));
+    add('Option attack efficiency', 'option', breakdownOptionRows(contexts, attackPhases));
+    add('Efficiency by set quality', 'setQuality', breakdownSetQualityRows(contexts, attackPhases));
+  } else if (tab === 'setting') {
+    add('Set quality by pass source', 'setting', breakdownSettingRows(contexts, 'pass'));
+    add('Set quality by defensive source', 'setting', breakdownSettingRows(contexts, 'defense'));
+    add('Kill percentage after set quality', 'killAfterSet', breakdownKillAfterSetRows(contexts));
+  } else if (tab === 'points') {
+    const allEvents = contexts.flatMap((context) => context.events.filter(context.owned));
+    const stats = computeStats(allEvents, 'team');
+    add('Points gained by phase', 'points', [
+      { label: 'Serving', value: stats.servingPointsGained },
+      { label: 'Sideout', value: stats.sideoutPointsGained },
+      { label: 'Transition', value: stats.transitionPointsGained },
+      { label: 'Blocking', value: stats.blockingPointsGained },
+    ]);
+    add('Total points and scoring events', 'points', [
+      { label: 'Total kills / aces', value: stats.totalKillsAces },
+      { label: 'Total errors', value: stats.totalErrors },
+      { label: 'Total points gained', value: stats.totalPointsGained },
+    ]);
+  }
+
+  return {
+    sections,
+    gameCount: contexts.length,
+    setCount: contexts.length,
   };
 }
 

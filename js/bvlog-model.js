@@ -322,6 +322,18 @@ function deriveRallyState(game) {
       attackSource = null;
       continue;
     }
+
+    // A server-swap correction is a non-stat event. It changes the serving
+    // rotation used by replay without changing the score or phase.
+    if (e?.type === 'server_swap' || e?.action === 'server_swap') {
+      if (e.player === 'A' || e.player === 'B') {
+        servingPlayer = e.player;
+        lastTeamServer = e.player;
+        needsServerRotation = false;
+      }
+      continue;
+    }
+
     const cfg = PHASE_CONFIG[e.phase]?.actions[e.action];
     if (!cfg) continue;
 

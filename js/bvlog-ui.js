@@ -95,7 +95,8 @@ function renderHomeScreen() {
     ['History', 'Browse, filter, and review games.', 'history'],
     ['Player Stats', 'View individual player performance.', 'playerStats'],
     ['Team Stats', 'View combined team performance.', 'teamStats'],
-    ['Stat Breakdown', 'Rank the roster in selected statistics.', 'statBreakdown'],
+    ['Stat Rankings', 'Rank the roster in selected statistics.', 'statBreakdown'],
+    ['Statistical Breakdowns', 'Explore serving, attacking, setting, and scoring patterns.', 'statisticalBreakdowns'],
     ['Cloud Sync', 'Connect this device to the shared coaching workspace.', 'cloudSync'],
   ];
 
@@ -689,6 +690,7 @@ const ACTION_LABELS = {
   block_kill: 'Block Kill', block_touch: 'Block Touch', block_error: 'Block Error',
   dig: 'Dig', dig_error: 'Dig Error',
   opponent_kill: 'Opponent Kill', opponent_error: 'Opponent Error',
+  server_swap: 'Server Swap',
   receive: 'Freeball Receive', dig_return: 'Dig Return', return: 'Dig Return',
 };
 function labelForAction(action, phase = null) {
@@ -911,6 +913,7 @@ function createScoreChangeBadge(side) {
 function renderTrackingControls(gameId) {
   const game = getWorkingGame(gameId);
   const editContext = getPointEditContext(gameId);
+  const rallyState = game ? deriveRallyState(game) : null;
   const controls = document.createElement('div');
   controls.className = 'tracking-controls';
 
@@ -979,6 +982,19 @@ function renderTrackingControls(gameId) {
   endSetBtn.addEventListener('click', () => renderSetCompletionScreen(gameId));
 
   controls.appendChild(undoBtn);
+  // Once the first serve has established the rotation, allow a coach to
+  // correct the server if the players were entered in the wrong order.
+  if (game && rallyState?.phase === PHASES.SERVE && rallyState.servingPlayer) {
+    const swapServerBtn = makeButton('Swap Server', 'swap-server-btn secondary-btn', () => {
+      if (!swapServingPlayer(gameId)) {
+        alert('Could not swap the server — try again.');
+        return;
+      }
+      renderLiveTrackingScreen(gameId);
+    });
+    swapServerBtn.title = 'Swap which player is serving. This does not change the score.';
+    controls.appendChild(swapServerBtn);
+  }
   controls.appendChild(pauseBtn);
   controls.appendChild(endSetBtn);
   controls.appendChild(endBtn);
@@ -1497,6 +1513,20 @@ function exportGameCsv(gameId) {
       ]);
       continue;
     }
+    if (event.type === 'server_swap' || event.action === 'server_swap') {
+      rows.push([
+        getEventSetNumber(game, event),
+        '',
+        new Date(event.timestamp).toISOString(),
+        'Serving',
+        event.player === 'A' ? playerNameForGame(game, 'A') : playerNameForGame(game, 'B'),
+        'Server Swap',
+        '',
+        '',
+        '',
+      ]);
+      continue;
+    }
     rows.push([
       getEventSetNumber(game, event),
       event.pointNumber,
@@ -1833,6 +1863,32 @@ function importCsvBackupText(text) {
         killQuality: null,
         attackSource: null,
       });
+      continue;
+    }
+    if (normalizeImportText(row[column('Phase')]) === 'serving'
+      && normalizeImportText(row[column('Action')]) === 'server swap') {
+      const timestampValue = Date.parse(row[column('Timestamp')]);
+      const playerName = row[column('Player')];
+      const player = normalizeImportText(playerName) === normalizeImportText(playerA.name)
+        ? 'A'
+        : normalizeImportText(playerName) === normalizeImportText(playerB.name)
+          ? 'B'
+          : null;
+      if (player) {
+        game.events.push({
+          id: crypto.randomUUID(),
+          timestamp: Number.isFinite(timestampValue) ? timestampValue : Date.now(),
+          type: 'server_swap',
+          setNumber: [1, 2, 3].includes(Number(row[column('Set')])) ? Number(row[column('Set')]) : 1,
+          phase: PHASES.SERVE,
+          player,
+          action: 'server_swap',
+          pointNumber: null,
+          attackType: null,
+          killQuality: null,
+          attackSource: null,
+        });
+      }
       continue;
     }
     const phase = phaseKeyFromImportLabel(row[column('Phase')]);
@@ -3190,6 +3246,7 @@ function getPerformanceMetricGroups() {
       rows: [
         ['KO%', 'koPct', formatPercent],
         ['wKO%', 'wKoPct', formatPercent],
+        ['Quality Ace%', 'qualityAcePct', formatPercent],
         ['Serving Points Gained', 'servingPointsGained', formatStatNumber],
       ],
     },
@@ -3447,7 +3504,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
   const activeScope = normalizeStatsScope(scope);
 
   const title = document.createElement('h1');
-  title.textContent = `Stat Breakdown — ${perGameStats ? 'Per Set Stats' : 'Total Stats'}`;
+  title.textContent = `Stat Rankings — ${perGameStats ? 'Per Set Stats' : 'Total Stats'}`;
   container.appendChild(title);
 
   const completedGames = loadGameHistory().filter((game) => game.isComplete);
@@ -3533,6 +3590,237 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
         ),
       ));
     }
+  }
+
+  appEl.appendChild(container);
+}
+
+// ----------------------------
+// Statistical breakdowns
+// ----------------------------
+
+const DEFAULT_STATISTICAL_BREAKDOWN_FILTERS = {
+  playerId: '',
+  partnerId: '',
+  opponent: '',
+  fromDate: '',
+  toDate: '',
+  setNumber: 'match',
+  status: 'completed',
+  result: '',
+  tab: 'serving',
+};
+
+const STATISTICAL_BREAKDOWN_TABS = [
+  ['serving', 'Serving'],
+  ['sideout', 'Sideout'],
+  ['transition', 'Transition'],
+  ['allAttacking', 'All Attacking'],
+  ['setting', 'Setting'],
+  ['points', 'Points Gained'],
+];
+
+function renderStatisticalBreakdownFilterPanel(filters, onChange) {
+  const panel = document.createElement('div');
+  panel.className = 'history-filter-panel statistical-breakdown-filter-panel';
+
+  const makeField = (labelText, control) => {
+    const field = document.createElement('label');
+    field.className = 'history-filter-field';
+    if (control.type === 'date') field.classList.add('date-filter-field');
+    field.textContent = labelText;
+    field.appendChild(control);
+    return field;
+  };
+
+  const playerSelect = document.createElement('select');
+  playerSelect.setAttribute('aria-label', 'View statistical breakdowns for');
+  playerSelect.appendChild(new Option('Whole team', ''));
+  for (const player of loadRoster()) {
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    playerSelect.appendChild(new Option(label, player.id));
+  }
+  playerSelect.value = filters.playerId;
+
+  const partnerSelect = document.createElement('select');
+  partnerSelect.setAttribute('aria-label', 'Filter statistical breakdowns by partner');
+  partnerSelect.appendChild(new Option('Any partner', ''));
+  const playedPartnerIds = new Set();
+  if (filters.playerId) {
+    for (const game of loadGameHistory()) {
+      if (game.playerAId === filters.playerId && game.playerBId) playedPartnerIds.add(game.playerBId);
+      if (game.playerBId === filters.playerId && game.playerAId) playedPartnerIds.add(game.playerAId);
+    }
+  }
+  for (const player of loadRoster()) {
+    if (player.id === filters.playerId || !playedPartnerIds.has(player.id)) continue;
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    partnerSelect.appendChild(new Option(label, player.id));
+  }
+  partnerSelect.value = filters.partnerId;
+  partnerSelect.disabled = !filters.playerId;
+
+  const opponentInput = document.createElement('input');
+  opponentInput.type = 'search';
+  opponentInput.placeholder = 'e.g. Smith/Jones';
+  opponentInput.value = filters.opponent;
+  opponentInput.setAttribute('aria-label', 'Filter statistical breakdowns by opponent');
+
+  const fromDateInput = document.createElement('input');
+  fromDateInput.type = 'date';
+  fromDateInput.value = filters.fromDate;
+  fromDateInput.setAttribute('aria-label', 'Filter statistical breakdowns from date');
+
+  const toDateInput = document.createElement('input');
+  toDateInput.type = 'date';
+  toDateInput.value = filters.toDate;
+  toDateInput.setAttribute('aria-label', 'Filter statistical breakdowns through date');
+
+  const setSelect = document.createElement('select');
+  setSelect.appendChild(new Option('Full match', 'match'));
+  for (const setNumber of [1, 2, 3]) setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
+  setSelect.value = filters.setNumber || 'match';
+
+  const statusSelect = document.createElement('select');
+  statusSelect.appendChild(new Option('Completed only', 'completed'));
+  statusSelect.appendChild(new Option('Any status', ''));
+  statusSelect.appendChild(new Option('Paused', 'paused'));
+  statusSelect.value = filters.status;
+
+  const resultSelect = document.createElement('select');
+  resultSelect.appendChild(new Option('Any result', ''));
+  resultSelect.appendChild(new Option('Wins', 'win'));
+  resultSelect.appendChild(new Option('Losses', 'loss'));
+  resultSelect.value = filters.result;
+
+  panel.appendChild(makeField('View stats for', playerSelect));
+  panel.appendChild(makeField('Partner', partnerSelect));
+  panel.appendChild(makeField('Opponent', opponentInput));
+  panel.appendChild(makeField('Played from', fromDateInput));
+  panel.appendChild(makeField('Played through', toDateInput));
+  panel.appendChild(makeField('View', setSelect));
+  panel.appendChild(makeField('Status', statusSelect));
+  panel.appendChild(makeField('Result', resultSelect));
+
+  const actions = document.createElement('div');
+  actions.className = 'history-filter-actions';
+  actions.appendChild(makeButton('Clear Filters', 'secondary-btn', () => onChange({ ...DEFAULT_STATISTICAL_BREAKDOWN_FILTERS, tab: filters.tab })));
+  panel.appendChild(actions);
+
+  const collectFilters = () => onChange({
+    ...filters,
+    playerId: playerSelect.value,
+    partnerId: partnerSelect.value,
+    opponent: opponentInput.value.trim(),
+    fromDate: fromDateInput.value,
+    toDate: toDateInput.value,
+    setNumber: setSelect.value,
+    status: statusSelect.value,
+    result: resultSelect.value,
+  });
+
+  playerSelect.addEventListener('change', () => onChange({
+    ...filters,
+    playerId: playerSelect.value,
+    partnerId: '',
+  }));
+  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+    control.addEventListener('input', collectFilters);
+    control.addEventListener('change', collectFilters);
+  }
+  return panel;
+}
+
+function formatStatisticalBreakdownValue(value, format) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  if (format === 'percent') return formatPercent(value);
+  if (format === 'decimal') return formatStatNumber(value);
+  return formatStatNumber(value);
+}
+
+function renderStatisticalBreakdownTable(section) {
+  const wrapper = document.createElement('section');
+  wrapper.className = 'statistical-breakdown-section';
+
+  const title = document.createElement('h2');
+  title.textContent = section.title;
+  wrapper.appendChild(title);
+
+  const table = document.createElement('table');
+  table.className = 'stats-table statistical-breakdown-table';
+  const header = document.createElement('tr');
+  header.appendChild(renderTableCell('Metric', 'th'));
+  for (const column of section.columns) header.appendChild(renderTableCell(column.label, 'th'));
+  table.appendChild(header);
+
+  for (const row of section.rows) {
+    const tableRow = document.createElement('tr');
+    tableRow.appendChild(renderTableCell(row.label, 'th'));
+    for (const column of section.columns) {
+      tableRow.appendChild(renderTableCell(formatStatisticalBreakdownValue(row[column.key], column.format)));
+    }
+    table.appendChild(tableRow);
+  }
+  wrapper.appendChild(table);
+  return wrapper;
+}
+
+function renderStatisticalBreakdownsScreen(state = {}) {
+  const activeState = {
+    ...DEFAULT_STATISTICAL_BREAKDOWN_FILTERS,
+    ...(state.filters || state),
+  };
+  if (!STATISTICAL_BREAKDOWN_TABS.some(([id]) => id === activeState.tab)) activeState.tab = 'serving';
+  if (typeof rememberActiveScreenParam === 'function') rememberActiveScreenParam('statisticalBreakdowns', activeState);
+
+  clearApp();
+  appEl.appendChild(renderNavBar('home'));
+
+  const container = document.createElement('div');
+  container.className = 'screen statistical-breakdowns-screen';
+
+  const player = activeState.playerId ? findPlayerById(activeState.playerId) : null;
+  const title = document.createElement('h1');
+  title.textContent = `Statistical Breakdowns — ${player ? player.name : 'Whole Team'}`;
+  container.appendChild(title);
+
+  const matchingGames = activeState.playerId
+    ? filterGamesForPlayerStats(loadGameHistory(), activeState.playerId, activeState)
+    : filterGamesForTeamStats(loadGameHistory(), activeState);
+  const completedGames = matchingGames.filter((game) => game.isComplete);
+  const subtitle = document.createElement('p');
+  subtitle.className = 'empty-state';
+  subtitle.textContent = `${completedGames.length} completed match${completedGames.length === 1 ? '' : 'es'} included. Paused matches and practice players are excluded from team views.`;
+  container.appendChild(subtitle);
+
+  const tabBar = document.createElement('div');
+  tabBar.className = 'statistical-breakdown-tabs';
+  for (const [tabId, label] of STATISTICAL_BREAKDOWN_TABS) {
+    const button = makeButton(label, tabId === activeState.tab ? 'primary-btn' : 'secondary-btn', () => {
+      renderStatisticalBreakdownsScreen({ ...activeState, tab: tabId });
+    });
+    button.classList.add('statistical-breakdown-tab');
+    button.setAttribute('aria-pressed', String(tabId === activeState.tab));
+    tabBar.appendChild(button);
+  }
+  container.appendChild(tabBar);
+  container.appendChild(renderStatisticalBreakdownFilterPanel(activeState, (nextFilters) => {
+    renderStatisticalBreakdownsScreen(nextFilters);
+  }));
+
+  if (completedGames.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No completed matches match the selected filters.';
+    container.appendChild(empty);
+  } else {
+    const report = computeStatisticalBreakdown(
+      completedGames,
+      activeState.tab,
+      activeState.playerId,
+      normalizeStatsScope(activeState.setNumber),
+    );
+    for (const section of report.sections) container.appendChild(renderStatisticalBreakdownTable(section));
   }
 
   appEl.appendChild(container);
@@ -3734,6 +4022,14 @@ function renderEventLog(game, nameA, nameB) {
       const item = document.createElement('li');
       item.className = 'event-log-item set-boundary-log-item';
       item.textContent = `Set ${event.setNumber} complete`;
+      list.appendChild(item);
+      return;
+    }
+    if (event.type === 'server_swap' || event.action === 'server_swap') {
+      const item = document.createElement('li');
+      item.className = 'event-log-item';
+      const serverName = event.player === 'A' ? nameA : nameB;
+      item.textContent = `Set ${getEventSetNumber(game, event)} · Server changed to ${serverName}`;
       list.appendChild(item);
       return;
     }

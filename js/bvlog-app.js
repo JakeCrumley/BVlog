@@ -20,6 +20,7 @@ const SCREENS = {
   ),
   teamStats:      () => renderTeamStatsScreen(),
   statBreakdown:  (selectedStatIds, perGameStats) => renderStatBreakdownScreen(selectedStatIds, perGameStats),
+  statisticalBreakdowns: (state = {}) => renderStatisticalBreakdownsScreen(state),
   cloudSync:      () => renderCloudSyncScreen(),
   editGameDetails: (gameId) => renderGameDetailsEditScreen(gameId),
   gameSummary:    (gameId) => renderGameSummaryScreen(gameId),
@@ -50,7 +51,7 @@ function rememberActiveScreenParam(screen, param) {
 // Live tracking is intentionally left alone so a realtime update cannot
 // interrupt a coach in the middle of logging a rally.
 window.addEventListener('bvlog-cloud-updated', () => {
-  if (['roster', 'history', 'playerStats', 'teamStats', 'statBreakdown'].includes(activeScreen)) {
+  if (['roster', 'history', 'playerStats', 'teamStats', 'statBreakdown', 'statisticalBreakdowns'].includes(activeScreen)) {
     navigate(activeScreen, activeScreenParam);
   }
 });

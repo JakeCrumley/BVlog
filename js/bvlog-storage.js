@@ -394,6 +394,36 @@ function setBoundaryEvent(game, setNumber) {
   };
 }
 
+function serverSwapEvent(setNumber, player) {
+  return {
+    id: crypto.randomUUID(),
+    timestamp: Date.now(),
+    type: 'server_swap',
+    setNumber,
+    phase: PHASES.SERVE,
+    player,
+    action: 'server_swap',
+    pointNumber: null,
+    attackType: null,
+    killQuality: null,
+    attackSource: null,
+  };
+}
+
+// Correct the serving rotation without creating a stat or changing the
+// current score. The correction is logged so replay, reload, and cloud sync
+// all use the corrected server going forward.
+function swapServingPlayer(gameId) {
+  const game = getGameById(gameId);
+  if (!game || game.isComplete || computeCurrentPhase(game) !== PHASES.SERVE) return false;
+
+  const rallyState = deriveRallyState(game);
+  if (!rallyState.servingPlayer) return false;
+  const nextServer = rallyState.servingPlayer === 'A' ? 'B' : 'A';
+  game.events = [...(game.events || []), serverSwapEvent(getCurrentSetNumber(game), nextServer)];
+  return saveGame(game);
+}
+
 // Finishes the current set and starts the next one without completing the
 // match. The boundary event lets replay reset the rally state cleanly.
 function advanceToNextSet(gameId) {

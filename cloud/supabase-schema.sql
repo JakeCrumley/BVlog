@@ -6,9 +6,14 @@ create table if not exists public.bvlog_workspaces (
   name text not null,
   roster jsonb not null default '[]'::jsonb,
   games jsonb not null default '[]'::jsonb,
+  deleted_game_ids jsonb not null default '[]'::jsonb,
   created_by uuid not null references auth.users(id),
   updated_at timestamptz not null default now()
 );
+
+-- Safe migration for workspaces created before deletion sync was added.
+alter table public.bvlog_workspaces
+  add column if not exists deleted_game_ids jsonb not null default '[]'::jsonb;
 
 create table if not exists public.bvlog_workspace_members (
   workspace_id uuid not null references public.bvlog_workspaces(id) on delete cascade,

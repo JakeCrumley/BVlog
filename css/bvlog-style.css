@@ -27,6 +27,14 @@ button:focus-visible:not(:disabled) > * {
   color: #fbbf24;
 }
 
+/* Mobile browsers may retain focus after a tap. Keep the gold treatment for
+   hover/press and keyboard focus, but return tapped buttons to their normal
+   color after the press ends. */
+button:focus:not(:focus-visible),
+button:focus:not(:focus-visible) > * {
+  color: inherit;
+}
+
 .screen {
   max-width: 480px;
   margin: 0 auto;
@@ -994,6 +1002,8 @@ h1 {
 .history-filter-field select {
   width: 100%;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 9px 10px;
   border: 1px solid #334155;
   border-radius: 6px;
@@ -1242,6 +1252,23 @@ h1 {
   text-align: left;
 }
 
+.stats-table.live-stat-summary-table {
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.live-stat-summary-table th:first-child,
+.live-stat-summary-table td:first-child {
+  width: 38%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.live-stat-summary-table th:not(:first-child),
+.live-stat-summary-table td:not(:first-child) {
+  width: 20.666%;
+}
+
 .stats-table tr:last-child th,
 .stats-table tr:last-child td {
   border-bottom: none;
@@ -1479,6 +1506,60 @@ h1 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
     padding: 10px;
+  }
+
+  .history-filter-field {
+    min-width: 0;
+  }
+
+  .history-filter-field input[type="date"],
+  .game-setup-form input[type="date"] {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 16px;
+    padding-left: 7px;
+    padding-right: 7px;
+  }
+
+  .live-stats-summary {
+    overflow-x: visible;
+  }
+
+  .live-stat-summary-table th,
+  .live-stat-summary-table td {
+    padding: 6px 3px;
+    font-size: 0.68rem;
+    line-height: 1.15;
+  }
+
+  .live-stat-summary-table th:first-child,
+  .live-stat-summary-table td:first-child {
+    font-size: 0.67rem;
+  }
+
+  .live-stat-summary-table th:not(:first-child),
+  .live-stat-summary-table td:not(:first-child) {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* A tap may leave a button focused on iOS. Preserve gold while pressed,
+     then restore the normal text color as soon as the press ends. */
+  button:focus:not(:disabled) {
+    color: inherit;
+  }
+
+  button:focus:not(:disabled) > * {
+    color: inherit;
+  }
+
+  button:active:not(:disabled) {
+    color: #fbbf24;
+  }
+
+  button:active:not(:disabled) > * {
+    color: #fbbf24;
   }
 
   .history-filter-actions {

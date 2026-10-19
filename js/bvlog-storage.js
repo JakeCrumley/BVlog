@@ -13,6 +13,7 @@
 const STORAGE_KEYS = {
   ROSTER: 'bvlog_roster',
   GAMES: 'bvlog_games',
+  DELETED_GAMES: 'bvlog_deleted_games',
 };
 
 // ----------------------------
@@ -172,6 +173,61 @@ function findPlayerById(playerId) {
 // just once at the end — it's cheap, and it means a closed tab or
 // dead battery mid-game doesn't lose the log.
 
+// A deletion tombstone is kept separately from the visible game list. This
+// is important for cloud sync: an empty local list cannot tell another device
+// whether a game was intentionally deleted or simply has not synced yet.
+// Tombstones prevent stale devices from reintroducing an intentionally
+// deleted game during the merge step.
+function loadDeletedGameTombstones() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.DELETED_GAMES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    const byId = new Map();
+    for (const entry of parsed) {
+      const id = typeof entry === 'string' ? entry : entry?.id;
+      if (!id) continue;
+      const deletedAt = typeof entry === 'string'
+        ? new Date(0).toISOString()
+        : (entry.deletedAt || entry.deleted_at || new Date(0).toISOString());
+      const current = byId.get(id);
+      if (!current || new Date(deletedAt).getTime() > new Date(current.deletedAt).getTime()) {
+        byId.set(id, { id, deletedAt });
+      }
+    }
+    return [...byId.values()];
+  } catch (err) {
+    console.error('loadDeletedGameTombstones failed, returning empty list:', err);
+    return [];
+  }
+}
+
+function saveDeletedGameTombstones(tombstones, notifyCloud = true) {
+  try {
+    const normalized = Array.isArray(tombstones) ? tombstones : [];
+    localStorage.setItem(STORAGE_KEYS.DELETED_GAMES, JSON.stringify(normalized));
+    if (notifyCloud && typeof scheduleCloudSync === 'function') scheduleCloudSync();
+    return true;
+  } catch (err) {
+    console.error('saveDeletedGameTombstones failed:', err);
+    return false;
+  }
+}
+
+function isGameDeleted(gameId) {
+  return loadDeletedGameTombstones().some((entry) => entry.id === gameId);
+}
+
+function markGameDeleted(gameId, notifyCloud = true) {
+  if (!gameId) return false;
+  const tombstones = loadDeletedGameTombstones();
+  const next = tombstones.filter((entry) => entry.id !== gameId);
+  next.push({ id: gameId, deletedAt: new Date().toISOString() });
+  return saveDeletedGameTombstones(next, notifyCloud);
+}
+
 function loadGameHistory() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.GAMES);
@@ -179,8 +235,10 @@ function loadGameHistory() {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
 
-    let changed = false;
-    for (const game of parsed) {
+    const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
+    const visibleGames = parsed.filter((game) => !deletedIds.has(game?.id));
+    let changed = visibleGames.length !== parsed.length;
+    for (const game of visibleGames) {
       if (!game || typeof game !== 'object') continue;
       const normalizedStatus = game.isComplete ? 'completed' : 'paused';
       if (game.status !== normalizedStatus) {
@@ -211,12 +269,12 @@ function loadGameHistory() {
     }
     if (changed) {
       try {
-        localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(parsed));
+        localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
       } catch (migrationError) {
         console.warn('Could not migrate game statuses:', migrationError);
       }
     }
-    return parsed;
+    return visibleGames;
   } catch (err) {
     console.error('loadGameHistory failed, returning empty history:', err);
     return [];
@@ -225,7 +283,10 @@ function loadGameHistory() {
 
 function saveGameHistory(games) {
   try {
-    localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(games));
+    const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
+    const visibleGames = (Array.isArray(games) ? games : [])
+      .filter((game) => game?.id && !deletedIds.has(game.id));
+    localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
     if (typeof scheduleCloudSync === 'function') scheduleCloudSync();
     return true;
   } catch (err) {
@@ -238,6 +299,7 @@ function saveGameHistory(games) {
 // already there, otherwise appends) and persists. Returns true on
 // success, false if the save failed.
 function saveGame(game) {
+  if (!game?.id || isGameDeleted(game.id)) return false;
   game.updatedAt = new Date().toISOString();
   const games = loadGameHistory();
   const index = games.findIndex(g => g.id === game.id);
@@ -371,6 +433,9 @@ function deleteGame(gameId) {
   const next = games.filter(g => g.id !== gameId);
   if (next.length === games.length) return false; // nothing matched
 
+  // Record the deletion before removing the local copy. If another tab or
+  // device still has the old game, the tombstone will win the next merge.
+  if (!markGameDeleted(gameId, false)) return false;
   return saveGameHistory(next);
 }
 

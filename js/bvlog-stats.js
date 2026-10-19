@@ -107,6 +107,13 @@ function computeRawCounts(events, who) {
       continue;
     }
 
+    // Passing Return is a defensive continuation, but its passing grade is
+    // equivalent to an OOS pass for all passing totals and efficiencies.
+    if (e.phase === PHASES.PASSING && e.action === 'return') {
+      counts.passing.oos++;
+      continue;
+    }
+
     if (!counts[e.phase] || !(e.action in counts[e.phase])) continue;
     counts[e.phase][e.action]++;
   }

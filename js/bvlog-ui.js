@@ -693,6 +693,7 @@ const ACTION_LABELS = {
 };
 function labelForAction(action, phase = null) {
   if (phase === PHASES.SETTING && action === 'error') return 'Error (Point End)';
+  if (phase === PHASES.PASSING && action === 'return') return 'Return';
   return ACTION_LABELS[action] ?? String(action);
 }
 
@@ -842,7 +843,9 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     if (visiblePlayers.length === 1) columns.classList.add('single-column');
 
     const actionKeys = Object.keys(phaseConfig.actions)
-      .filter(a => !TEAMLESS_ACTIONS.has(a) && a !== 'return' && !(phase === PHASES.SETTING && a === '0'));
+      .filter(a => !TEAMLESS_ACTIONS.has(a)
+        && !(phase === PHASES.DEFENSE && a === 'return')
+        && !(phase === PHASES.SETTING && a === '0'));
 
     for (const player of visiblePlayers) {
       const playerName = player === 'A' ? nameA : nameB;

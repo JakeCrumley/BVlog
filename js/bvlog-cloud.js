@@ -141,21 +141,21 @@ async function loadCloudWorkspace() {
 
   const { data, error } = await client
     .from('bvlog_workspaces')
-    .select('id, name, roster, games, updated_at')
+    .select('id, name, roster, games, deleted_game_ids, updated_at')
     .eq('id', workspaceId)
     .single();
   if (error) throw error;
   return data;
 }
 
-async function saveCloudWorkspace(roster, games) {
+async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
   const client = getCloudClient();
   const config = loadCloudConfig();
   if (!client || !config.workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
 
   const { data, error } = await client
     .from('bvlog_workspaces')
-    .update({ roster, games, updated_at: new Date().toISOString() })
+    .update({ roster, games, deleted_game_ids: deletedGameTombstones, updated_at: new Date().toISOString() })
     .eq('id', config.workspaceId)
     .select('id, updated_at')
     .single();
@@ -248,10 +248,32 @@ function remapCloudGame(game, idRemap) {
 }
 
 function mergeCloudGames(localGames = [], remoteGames = [], idRemap = new Map()) {
+  return mergeCloudGamesWithDeletions(localGames, remoteGames, idRemap, []);
+}
+
+function mergeCloudDeletions(localTombstones = [], remoteTombstones = []) {
   const byId = new Map();
+  for (const raw of [...localTombstones, ...remoteTombstones]) {
+    const id = typeof raw === 'string' ? raw : raw?.id;
+    if (!id) continue;
+    const deletedAt = typeof raw === 'string'
+      ? new Date(0).toISOString()
+      : (raw.deletedAt || raw.deleted_at || new Date(0).toISOString());
+    const existing = byId.get(id);
+    if (!existing || cloudTime(deletedAt) > cloudTime(existing.deletedAt)) {
+      byId.set(id, { id, deletedAt });
+    }
+  }
+  return [...byId.values()].sort((a, b) => cloudTime(a.deletedAt) - cloudTime(b.deletedAt));
+}
+
+function mergeCloudGamesWithDeletions(localGames = [], remoteGames = [], idRemap = new Map(), deletedTombstones = []) {
+  const byId = new Map();
+  const deletedIds = new Set(deletedTombstones.map((entry) => entry.id));
   for (const raw of [...localGames, ...remoteGames]) {
     if (!raw?.id || !Array.isArray(raw.events)) continue;
     const game = remapCloudGame(raw, idRemap);
+    if (deletedIds.has(game.id)) continue;
     const existing = byId.get(game.id);
     if (!existing || cloudTime(game.updatedAt || game.date) > cloudTime(existing.updatedAt || existing.date)) {
       byId.set(game.id, game);
@@ -264,11 +286,20 @@ function cloudStable(value) {
   return JSON.stringify(value || []);
 }
 
-function mergeCloudData(localRoster, localGames, remoteRoster, remoteGames) {
+function mergeCloudData(
+  localRoster,
+  localGames,
+  remoteRoster,
+  remoteGames,
+  localDeletedGames = [],
+  remoteDeletedGames = [],
+) {
   const rosterResult = mergeCloudRosters(localRoster, remoteRoster);
+  const deletedGames = mergeCloudDeletions(localDeletedGames, remoteDeletedGames);
   return {
     roster: rosterResult.roster,
-    games: mergeCloudGames(localGames, remoteGames, rosterResult.idRemap),
+    games: mergeCloudGamesWithDeletions(localGames, remoteGames, rosterResult.idRemap, deletedGames),
+    deletedGames,
   };
 }
 
@@ -279,6 +310,7 @@ function setCloudApplySuppressed(value) {
 function applyCloudMergedData(merged) {
   setCloudApplySuppressed(true);
   try {
+    saveDeletedGameTombstones(merged.deletedGames || [], false);
     saveRoster(merged.roster || []);
     saveGameHistory(merged.games || []);
   } finally {
@@ -354,7 +386,7 @@ async function fetchCloudWorkspace() {
   if (!client || !workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
   const { data, error } = await client
     .from('bvlog_workspaces')
-    .select('id, name, roster, games, updated_at')
+    .select('id, name, roster, games, deleted_game_ids, updated_at')
     .eq('id', workspaceId)
     .single();
   if (error) throw error;
@@ -400,24 +432,39 @@ async function joinCloudWorkspace() {
   return fetchCloudWorkspace();
 }
 
-async function saveCloudWorkspace(roster, games) {
+async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
   const client = getCloudClient();
   const config = loadCloudConfig();
   if (!client || !config.workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
 
   const remote = await fetchCloudWorkspace();
-  const merged = mergeCloudData(roster, games, remote.roster || [], remote.games || []);
+  const merged = mergeCloudData(
+    roster,
+    games,
+    remote.roster || [],
+    remote.games || [],
+    deletedGameTombstones,
+    remote.deleted_game_ids || [],
+  );
   const changed = cloudStable(merged.roster) !== cloudStable(remote.roster)
-    || cloudStable(merged.games) !== cloudStable(remote.games);
+    || cloudStable(merged.games) !== cloudStable(remote.games)
+    || cloudStable(merged.deletedGames) !== cloudStable(remote.deleted_game_ids);
   if (!changed) return { id: remote.id, updated_at: remote.updated_at, changed: false, merged };
 
   const { data, error } = await client
     .from('bvlog_workspaces')
-    .update({ roster: merged.roster, games: merged.games, updated_at: new Date().toISOString() })
+    .update({
+      roster: merged.roster,
+      games: merged.games,
+      deleted_game_ids: merged.deletedGames,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', config.workspaceId)
+    .eq('updated_at', remote.updated_at)
     .select('id, updated_at')
-    .single();
+    .maybeSingle();
   if (error) throw error;
+  if (!data) throw new Error('The shared workspace changed on another device. Please sync again.');
   return { ...data, changed: true, merged };
 }
 
@@ -430,27 +477,64 @@ async function syncCloudWorkspace({ silent = false } = {}) {
     if (!session) return { signedOut: true };
 
     await ensureCloudWorkspaceMembership();
-    const remote = await fetchCloudWorkspace();
-    const merged = mergeCloudData(
-      loadRoster(),
-      loadGameHistory(),
-      remote.roster || [],
-      remote.games || [],
-    );
-    const localRoster = loadRoster();
-    const localGames = loadGameHistory();
-    const localChanged = cloudStable(merged.roster) !== cloudStable(localRoster)
-      || cloudStable(merged.games) !== cloudStable(localGames);
-    if (localChanged) applyCloudMergedData(merged);
+    let localChanged = false;
+    let remoteChanged = false;
+    let converged = false;
 
-    const remoteChanged = cloudStable(merged.roster) !== cloudStable(remote.roster)
-      || cloudStable(merged.games) !== cloudStable(remote.games);
-    if (remoteChanged) {
-      const { error } = await getCloudClient()
+    // The updated_at predicate makes the write optimistic: if another device
+    // writes between our read and write, no rows are updated and we retry the
+    // merge against the newer remote snapshot instead of overwriting it.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const remote = await fetchCloudWorkspace();
+      const localRoster = loadRoster();
+      const localGames = loadGameHistory();
+      const localDeletedGames = loadDeletedGameTombstones();
+      const merged = mergeCloudData(
+        localRoster,
+        localGames,
+        remote.roster || [],
+        remote.games || [],
+        localDeletedGames,
+        remote.deleted_game_ids || [],
+      );
+      const thisLocalChanged = cloudStable(merged.roster) !== cloudStable(localRoster)
+        || cloudStable(merged.games) !== cloudStable(localGames)
+        || cloudStable(merged.deletedGames) !== cloudStable(localDeletedGames);
+      if (thisLocalChanged) {
+        applyCloudMergedData(merged);
+        localChanged = true;
+      }
+
+      const thisRemoteChanged = cloudStable(merged.roster) !== cloudStable(remote.roster)
+        || cloudStable(merged.games) !== cloudStable(remote.games)
+        || cloudStable(merged.deletedGames) !== cloudStable(remote.deleted_game_ids);
+      if (!thisRemoteChanged) {
+        converged = true;
+        break;
+      }
+
+      const { data, error } = await getCloudClient()
         .from('bvlog_workspaces')
-        .update({ roster: merged.roster, games: merged.games, updated_at: new Date().toISOString() })
-        .eq('id', loadCloudConfig().workspaceId);
+        .update({
+          roster: merged.roster,
+          games: merged.games,
+          deleted_game_ids: merged.deletedGames,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', loadCloudConfig().workspaceId)
+        .eq('updated_at', remote.updated_at)
+        .select('id, updated_at')
+        .maybeSingle();
       if (error) throw error;
+      if (data) {
+        remoteChanged = true;
+        converged = true;
+        break;
+      }
+    }
+
+    if (!converged) {
+      throw new Error('The shared workspace is changing on another device. Please try syncing again.');
     }
 
     window.dispatchEvent(new CustomEvent('bvlog-cloud-updated', {
@@ -520,6 +604,13 @@ function restartCloudSync() {
 }
 
 window.addEventListener('online', () => startCloudSync().catch(() => {}));
+// Same-origin tabs share localStorage but do not receive each other's custom
+// events. Use the browser storage event to prompt a merge in sibling tabs so
+// a delete or game update is noticed without requiring a manual reload.
+window.addEventListener('storage', (event) => {
+  if (![STORAGE_KEYS.ROSTER, STORAGE_KEYS.GAMES, STORAGE_KEYS.DELETED_GAMES].includes(event.key)) return;
+  startCloudSync().catch(() => {});
+});
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') startCloudSync().catch(() => {});
 });

@@ -70,7 +70,8 @@ const KILL_QUALITIES = {
 // point specify the next phase instead (or DYNAMIC_ATTACK — see above).
 //
 // Defense receive feeds the setter directly; Dig Return skips setting and
-// goes straight into the appropriate attack phase.
+// goes straight into the appropriate attack phase. A Passing Return goes to
+// Defense and is recorded as an OOS passing result by the stats engine.
 
 const PHASE_CONFIG = {
   [PHASES.SERVE]: {
@@ -90,6 +91,7 @@ const PHASE_CONFIG = {
       opponent_error: { endsPoint: true, winner: 'team' },
       oos:        { endsPoint: false, next: PHASES.SETTING },
       in_system:  { endsPoint: false, next: PHASES.SETTING },
+      return:     { endsPoint: false, next: PHASES.DEFENSE },
     },
   },
 
@@ -337,6 +339,12 @@ function deriveRallyState(game) {
         directReturner = e.player;
         attackSource = ATTACK_SOURCES.DIG_RETURN;
       }
+    }
+
+    // The passer is the first touch of the rally's offensive exchange. They
+    // cannot also be the setter for the following setting phase.
+    if (e.phase === PHASES.PASSING && (e.player === 'A' || e.player === 'B')) {
+      firstDefender = e.player;
     }
 
     if (e.phase === PHASES.SETTING && (e.player === 'A' || e.player === 'B')) {

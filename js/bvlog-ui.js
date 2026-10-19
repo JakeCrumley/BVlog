@@ -3675,6 +3675,30 @@ function renderRawStatsTable(stats, nameA, nameB) {
   return section;
 }
 
+function getEventStartScores(game) {
+  const scoresBySet = new Map();
+  const startScores = new Map();
+
+  for (const event of game.events || []) {
+    if (event.type === 'set_boundary' || event.action === 'set_end') continue;
+
+    const setNumber = getEventSetNumber(game, event);
+    const currentScore = scoresBySet.get(setNumber) || { team: 0, opponent: 0 };
+    // Every event in the same point receives the same starting score. The
+    // score advances only after the point-ending event is processed below.
+    startScores.set(event, { ...currentScore });
+
+    const cfg = PHASE_CONFIG[event.phase]?.actions[event.action];
+    if (!cfg?.endsPoint) continue;
+    scoresBySet.set(setNumber, {
+      team: currentScore.team + (cfg.winner === 'team' ? 1 : 0),
+      opponent: currentScore.opponent + (cfg.winner === 'opponent' ? 1 : 0),
+    });
+  }
+
+  return startScores;
+}
+
 function renderEventLog(game, nameA, nameB) {
   const section = document.createElement('section');
   section.className = 'summary-section';
@@ -3693,6 +3717,7 @@ function renderEventLog(game, nameA, nameB) {
 
   const list = document.createElement('ol');
   list.className = 'event-log';
+  const eventStartScores = getEventStartScores(game);
   game.events.forEach((event) => {
     if (event.type === 'set_boundary' || event.action === 'set_end') {
       const item = document.createElement('li');
@@ -3706,7 +3731,12 @@ function renderEventLog(game, nameA, nameB) {
 
     const point = document.createElement('span');
     point.className = 'event-point';
+    const scoreAtStart = eventStartScores.get(event) || { team: 0, opponent: 0 };
     point.textContent = `Set ${getEventSetNumber(game, event)} · Point ${event.pointNumber}`;
+    const startScore = document.createElement('span');
+    startScore.className = 'event-start-score';
+    startScore.textContent = `${scoreAtStart.team}–${scoreAtStart.opponent}`;
+    point.appendChild(startScore);
     item.appendChild(point);
 
     const details = document.createElement('div');

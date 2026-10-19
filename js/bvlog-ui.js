@@ -2702,6 +2702,14 @@ function renderTeamStatsScreen(perGameStats = true, filters = {}) {
 }
 
 function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = [], perGameStats = true, filters = {}) {
+  if (typeof rememberActiveScreenParam === 'function') {
+    rememberActiveScreenParam('playerStats', {
+      selectedPlayerId,
+      comparisonPlayerIds,
+      perGameStats,
+      filters,
+    });
+  }
   clearApp();
   appEl.appendChild(renderNavBar('playerStats'));
 

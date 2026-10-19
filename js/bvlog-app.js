@@ -12,7 +12,12 @@ const SCREENS = {
   startingAction: (setupData) => renderStartingActionScreen(setupData),
   liveGame:       (gameId) => renderLiveTrackingScreen(gameId),
   history:        () => renderHistoryScreen(),
-  playerStats:    () => renderPlayerStatsScreen(),
+  playerStats:    (state = {}) => renderPlayerStatsScreen(
+    state.selectedPlayerId || null,
+    Array.isArray(state.comparisonPlayerIds) ? state.comparisonPlayerIds : [],
+    state.perGameStats !== false,
+    state.filters || {},
+  ),
   teamStats:      () => renderTeamStatsScreen(),
   statBreakdown:  (selectedStatIds, perGameStats) => renderStatBreakdownScreen(selectedStatIds, perGameStats),
   cloudSync:      () => renderCloudSyncScreen(),
@@ -21,6 +26,7 @@ const SCREENS = {
 };
 
 let activeScreen = 'home';
+let activeScreenParam = undefined;
 
 function navigate(screen, param) {
   const render = SCREENS[screen];
@@ -29,7 +35,15 @@ function navigate(screen, param) {
     return;
   }
   activeScreen = screen;
+  activeScreenParam = param;
   render(param);
+}
+
+// Some screens update themselves directly from control handlers rather than
+// through navigate(). Preserve their current state so a cloud refresh does
+// not unexpectedly reset a detail view back to its list screen.
+function rememberActiveScreenParam(screen, param) {
+  if (activeScreen === screen) activeScreenParam = param;
 }
 
 // Refresh read-only screens when another connected device merges new data.
@@ -37,7 +51,7 @@ function navigate(screen, param) {
 // interrupt a coach in the middle of logging a rally.
 window.addEventListener('bvlog-cloud-updated', () => {
   if (['roster', 'history', 'playerStats', 'teamStats', 'statBreakdown'].includes(activeScreen)) {
-    navigate(activeScreen);
+    navigate(activeScreen, activeScreenParam);
   }
 });
 

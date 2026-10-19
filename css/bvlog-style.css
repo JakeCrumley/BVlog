@@ -1275,7 +1275,21 @@ h1 {
 }
 
 .team-comparison-table tr > :last-child {
-  border-left: 2px solid rgba(226, 232, 240, 0.24);
+  position: relative;
+  border-left: none;
+}
+
+/* Keep the divider inside the Team column so it visually separates Player B
+   and Team without sitting directly against Player B's value. */
+.team-comparison-table tr > :last-child::before {
+  background: rgba(226, 232, 240, 0.24);
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  top: 0;
+  width: 2px;
 }
 
 .stats-table thead,
@@ -1664,6 +1678,10 @@ h1 {
   .stats-table.team-comparison-table th:first-child,
   .stats-table.team-comparison-table td:first-child {
     width: 40%;
+  }
+
+  .team-comparison-table tr > :last-child::before {
+    left: 8px;
   }
 
   .stats-table.stat-breakdown-table th:first-child,

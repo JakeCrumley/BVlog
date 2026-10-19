@@ -3647,11 +3647,11 @@ function renderRawStatsTable(stats, nameA, nameB) {
 
   const phaseRows = [
     ['Serving', 'serve', [['Ace', 'ace'], ['KO', 'ko'], ['In-System', 'in_system'], ['Error', 'error']]],
-    ['Passing', 'passing', [['Aced', 'aced'], ['Opponent Error', 'opponent_error'], ['OOS', 'oos'], ['In-System', 'in_system']]],
+    ['Passing', 'passing', [['Aced', 'aced'], ['OOS', 'oos'], ['In-System', 'in_system']]],
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
     ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
     ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Receive', 'receive'], ['Opponent Kill', 'opponent_kill'], ['Opponent Error', 'opponent_error']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Receive', 'receive']]],
   ];
 
   const values = [stats.playerA.raw, stats.playerB.raw, stats.team.raw];

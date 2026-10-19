@@ -689,7 +689,7 @@ const ACTION_LABELS = {
   block_kill: 'Block Kill', block_touch: 'Block Touch', block_error: 'Block Error',
   dig: 'Dig', dig_error: 'Dig Error',
   opponent_kill: 'Opponent Kill', opponent_error: 'Opponent Error',
-  receive: 'Receive', dig_return: 'Dig Return', return: 'Dig Return',
+  receive: 'Freeball Receive', dig_return: 'Dig Return', return: 'Dig Return',
 };
 function labelForAction(action, phase = null) {
   if (phase === PHASES.SETTING && action === 'error') return 'Error (Point End)';
@@ -2993,7 +2993,7 @@ function renderPlayerComparisonRawTable(rows) {
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
     ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
     ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Receive', 'receive']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   for (const [phaseLabel, bucketName, actionRows] of phaseRows) {
@@ -3068,7 +3068,7 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
     ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
     ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Receive', 'receive']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   for (const [phaseLabel, bucketName, actionRows] of phaseRows) {
@@ -3651,7 +3651,7 @@ function renderRawStatsTable(stats, nameA, nameB) {
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
     ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
     ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Receive', 'receive']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   const values = [stats.playerA.raw, stats.playerB.raw, stats.team.raw];

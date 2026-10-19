@@ -41,6 +41,27 @@ as $$
   );
 $$;
 
+-- A new user is not a workspace member yet, so the membership insert policy
+-- cannot rely on the normal RLS-protected workspace select policy to confirm
+-- that the shared workspace exists. This restricted security-definer helper
+-- performs only that existence check without exposing workspace contents.
+create or replace function public.bvlog_workspace_exists(target_workspace_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.bvlog_workspaces
+    where id = target_workspace_id
+  );
+$$;
+
+revoke all on function public.bvlog_workspace_exists(uuid) from public;
+grant execute on function public.bvlog_workspace_exists(uuid) to authenticated;
+
 drop policy if exists "BVlog members can read workspaces" on public.bvlog_workspaces;
 create policy "BVlog members can read workspaces"
   on public.bvlog_workspaces for select
@@ -68,11 +89,7 @@ create policy "BVlog signed-in users can join workspaces"
   on public.bvlog_workspace_members for insert
   with check (
     user_id = auth.uid()
-    and exists (
-      select 1
-      from public.bvlog_workspaces
-      where id = workspace_id
-    )
+    and public.bvlog_workspace_exists(workspace_id)
   );
 
 -- Enable realtime so every connected device can notice a merged workspace row.

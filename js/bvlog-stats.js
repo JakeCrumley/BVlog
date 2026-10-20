@@ -46,7 +46,7 @@ function computeRawCounts(events, who) {
     sideout:    { kill: 0, error: 0, blocked: 0, continue: 0, attempts: 0, attemptedContinue: 0 },
     transition: { kill: 0, error: 0, blocked: 0, continue: 0, attempts: 0, attemptedContinue: 0 },
     defense:    {
-      block_kill: 0, block_touch: 0, block_error: 0,
+      block_kill: 0, block_touch: 0, block_return: 0, block_error: 0,
       dig: 0, dig_error: 0,
       opponent_kill: 0, opponent_error: 0,
       receive: 0, dig_return: 0, return: 0,
@@ -149,8 +149,19 @@ function computeRawCounts(events, who) {
 // ----------------------------
 // Full stat line (raw counts + every formula)
 // ----------------------------
-function computeStats(events, who) {
+function computePointTotals(events) {
+  const totals = { team: 0, opponent: 0 };
+  for (const event of events || []) {
+    const actionConfig = PHASE_CONFIG[event?.phase]?.actions?.[event?.action];
+    if (!actionConfig?.endsPoint || !actionConfig.winner) continue;
+    totals[actionConfig.winner]++;
+  }
+  return totals;
+}
+
+function computeStats(events, who, pointTotals = null) {
   const c = computeRawCounts(events, who);
+  const points = pointTotals || computePointTotals(events);
 
   // --- Spec'd efficiency formulas ---
   const koPct       = safeDiv(c.serve.ace + c.serve.ko, c.serve.attempts);
@@ -192,6 +203,7 @@ function computeStats(events, who) {
     settingPointEndErrors;
 
   const totalPointsGained = totalKillsAces - totalErrors;
+  const ptPct = safeDiv(points.team, points.opponent);
 
   // --- New formulas ---
   const avgSetQuality = safeDiv(c.setting.totalValue, c.setting.valuedAttempts);
@@ -227,6 +239,7 @@ function computeStats(events, who) {
     totalKillsAces,
     totalErrors,
     totalPointsGained,
+    ptPct,
     avgSetQuality,
     qualityKillPct,
     qualityAcePct,
@@ -241,10 +254,11 @@ function computeStats(events, who) {
 // ----------------------------
 function computeGameStats(game, scope = 'match') {
   const events = getGameEventsForScope(game, scope);
+  const pointTotals = computePointTotals(events);
   return {
-    team:    computeStats(events, 'team'),
-    playerA: computeStats(events, 'A'),
-    playerB: computeStats(events, 'B'),
+    team:    computeStats(events, 'team', pointTotals),
+    playerA: computeStats(events, 'A', pointTotals),
+    playerB: computeStats(events, 'B', pointTotals),
   };
 }
 
@@ -384,7 +398,7 @@ function breakdownAttackTypeRows(contexts, phases) {
   const types = [ATTACK_TYPES.HARD_DRIVEN, ATTACK_TYPES.SHOT, ATTACK_TYPES.FREEBALL];
   const totals = new Map(types.map((type) => [type, {
     attempts: 0, kills: 0, errors: 0, blocked: 0, continues: 0,
-    noContact: 0, semiContact: 0, fullContact: 0, opponentError: 0, qualityTotal: 0,
+    noContact: 0, semiContact: 0, fullContact: 0, qualityTotal: 0,
   }]));
 
   for (const context of contexts) {
@@ -402,9 +416,6 @@ function breakdownAttackTypeRows(contexts, phases) {
         if (event.killQuality === KILL_QUALITIES.NO_CONTACT) row.noContact++;
         if (event.killQuality === KILL_QUALITIES.SEMI_CONTACT) row.semiContact++;
         if (event.killQuality === KILL_QUALITIES.FULL_CONTACT) row.fullContact++;
-      } else if (event.killQuality === KILL_QUALITIES.OPPONENT_ERROR) {
-        row.opponentError++;
-        row.qualityTotal++;
       }
     });
   }
@@ -422,7 +433,6 @@ function breakdownAttackTypeRows(contexts, phases) {
       noContact: safeDiv(row.noContact, row.qualityTotal),
       semiContact: safeDiv(row.semiContact, row.qualityTotal),
       fullContact: safeDiv(row.fullContact, row.qualityTotal),
-      opponentError: safeDiv(row.opponentError, row.qualityTotal),
     };
   });
 }
@@ -570,7 +580,7 @@ function statisticalBreakdownColumns(kind) {
       ['Errors', 'errors', 'number'], ['Blocked', 'blocked', 'number'],
       ['Continues', 'continues', 'number'], ['Eff%', 'efficiency', 'percent'],
       ['No-contact%', 'noContact', 'percent'], ['Semi-contact%', 'semiContact', 'percent'],
-      ['Full-contact%', 'fullContact', 'percent'], ['Opponent error%', 'opponentError', 'percent'],
+      ['Full-contact%', 'fullContact', 'percent'],
     ],
     sourceAttack: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Kill share%', 'killShare', 'percent'], ['Eff%', 'efficiency', 'percent']],
     option: [['Attempts', 'attempts', 'number'], ['Kills', 'kills', 'number'], ['Errors', 'errors', 'number'], ['Eff%', 'efficiency', 'percent']],
@@ -594,8 +604,13 @@ function computeStatisticalBreakdown(games, tab = 'serving', playerId = '', scop
     : [PHASES.SIDEOUT, PHASES.TRANSITION];
 
   if (tab === 'serving') {
-    const qualityValues = Object.values(KILL_QUALITIES).map((quality) => ({ label: breakdownQualityLabel(quality), aces: 0 }));
-    const qualityMap = new Map(Object.values(KILL_QUALITIES).map((quality, index) => [quality, qualityValues[index]]));
+    const contactQualities = [
+      KILL_QUALITIES.NO_CONTACT,
+      KILL_QUALITIES.SEMI_CONTACT,
+      KILL_QUALITIES.FULL_CONTACT,
+    ];
+    const qualityValues = contactQualities.map((quality) => ({ label: breakdownQualityLabel(quality), aces: 0 }));
+    const qualityMap = new Map(contactQualities.map((quality, index) => [quality, qualityValues[index]]));
     let totalAces = 0;
     let totalServes = 0;
     const resultTotals = new Map([['ko', { serves: 0, opponentKills: 0 }], ['in_system', { serves: 0, opponentKills: 0 }]]);
@@ -603,7 +618,7 @@ function computeStatisticalBreakdown(games, tab = 'serving', playerId = '', scop
       context.events.forEach((event) => {
         if (!context.owned(event) || event.phase !== PHASES.SERVE) return;
         totalServes++;
-        if (event.action === 'ace') {
+        if (event.action === 'ace' && event.killQuality !== KILL_QUALITIES.OPPONENT_ERROR) {
           totalAces++;
           if (qualityMap.has(event.killQuality)) qualityMap.get(event.killQuality).aces++;
         }
@@ -690,7 +705,12 @@ function computePlayerStatsAcrossGames(games, scope = 'match') {
       const playerEvents = scopedEvents.filter((event) => event.player === side);
       if (playerEvents.length === 0) continue;
 
+      const pointTotals = computePointTotals(scopedEvents);
+
       entry.gameCount++;
+      entry.pointTotals = entry.pointTotals || { team: 0, opponent: 0 };
+      entry.pointTotals.team += pointTotals.team;
+      entry.pointTotals.opponent += pointTotals.opponent;
       entry.setCount = (entry.setCount || 0) + new Set(
         playerEvents.map((event) => getEventSetNumber(game, event)),
       ).size;
@@ -703,6 +723,6 @@ function computePlayerStatsAcrossGames(games, scope = 'match') {
     playerId: entry.playerId,
     gameCount: entry.gameCount,
     setCount: entry.setCount || entry.gameCount,
-    stats: computeStats(entry.events, 'team'),
+    stats: computeStats(entry.events, 'team', entry.pointTotals),
   }));
 }

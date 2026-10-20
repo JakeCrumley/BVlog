@@ -1,4 +1,4 @@
-const BVLOG_CACHE_NAME = 'bvlog-shell-v1';
+const BVLOG_CACHE_NAME = 'bvlog-shell-v8';
 const BVLOG_APP_SHELL = [
   './index.html',
   './manifest.webmanifest',
@@ -11,6 +11,10 @@ const BVLOG_APP_SHELL = [
   './js/bvlog-pwa.js',
   './js/bvlog-ui.js',
   './js/bvlog-app.js',
+  './assets/button-click.mp3',
+  './assets/team-point-click.mp3',
+  './assets/opponent-point-click.mp3',
+  './assets/home-button-click.mp3',
   './San_Jose_State_Spartans_logo.svg',
 ];
 

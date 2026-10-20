@@ -37,8 +37,9 @@ const PHASES = {
 // Sentinel used as `next` for any action whose destination depends on
 // rally state (first attack this rally → Sideout, later → Transition).
 // Resolved at replay time by resolveAttackPhase(). Used by: Setting's
-// own actions, and Defense's "Dig Return" (which skips Passing *and*
-// Setting, going straight into an attack).
+// own actions, Passing's "Return" (which goes straight into a Sideout
+// attack), and Defense's "Dig Return" (which skips Passing *and* Setting,
+// going straight into an attack).
 const DYNAMIC_ATTACK = 'dynamic_attack';
 
 // A direct attack created by a defensive Dig Return is tracked separately
@@ -70,8 +71,9 @@ const KILL_QUALITIES = {
 // point specify the next phase instead (or DYNAMIC_ATTACK — see above).
 //
 // Defense receive feeds the setter directly; Dig Return skips setting and
-// goes straight into the appropriate attack phase. A Passing Return goes to
-// Defense and is recorded as an OOS passing result by the stats engine.
+// goes straight into the appropriate attack phase. A Passing Return goes
+// straight into the Sideout attack screen and is recorded as an OOS passing
+// result by the stats engine.
 
 const PHASE_CONFIG = {
   [PHASES.SERVE]: {
@@ -91,7 +93,7 @@ const PHASE_CONFIG = {
       opponent_error: { endsPoint: true, winner: 'team' },
       oos:        { endsPoint: false, next: PHASES.SETTING },
       in_system:  { endsPoint: false, next: PHASES.SETTING },
-      return:     { endsPoint: false, next: PHASES.DEFENSE },
+      return:     { endsPoint: false, next: DYNAMIC_ATTACK },
     },
   },
 
@@ -143,7 +145,8 @@ const PHASE_CONFIG = {
     label: 'Defense',
     actions: {
       block_kill:      { endsPoint: true,  winner: 'team' },
-      block_touch:     { endsPoint: false, next: PHASES.SETTING }, // ⚠️ confirm: touch keeps ball alive on your side → you set it next?
+      block_touch:     { endsPoint: false, next: PHASES.SETTING }, // a normal block touch keeps the ball on your side → set next
+      block_return:    { endsPoint: false, next: PHASES.DEFENSE }, // block return keeps the team defending
       block_error:     { endsPoint: true,  winner: 'opponent' },   // ⚠️ confirm: net violation / ball out off the block → opponent point?
       dig:              { endsPoint: false, next: PHASES.SETTING },
       dig_return:       { endsPoint: false, next: DYNAMIC_ATTACK }, // a dig return becomes a direct attack
@@ -221,6 +224,7 @@ function createGame({ playerAId, playerBId, opponentName, startingAction, played
     playerBId,
     opponentName,
     startingAction,
+    setStartingActions: { 1: startingAction },
     events: [],       // Event[]  — the full chronological log
     isComplete: false,
     status: 'paused', // every incomplete game is paused until completed
@@ -263,6 +267,13 @@ function getCurrentSetNumber(game) {
   return eventSets.length > 0 ? Math.max(...eventSets) : 1;
 }
 
+function getSetStartingAction(game, setNumber = 1) {
+  const configured = game?.setStartingActions?.[setNumber]
+    ?? game?.setStartingActions?.[String(setNumber)];
+  if (configured === 'receive' || configured === 'serve') return configured;
+  return game?.startingAction === 'receive' ? 'receive' : 'serve';
+}
+
 function getCompletedSetNumbers(game) {
   const saved = Array.isArray(game?.completedSetNumbers)
     ? game.completedSetNumbers.map(Number).filter((setNumber) => [1, 2, 3].includes(setNumber))
@@ -293,8 +304,10 @@ function getGameEventsForScope(game, scope = 'match') {
 // Replay the event log into all UI-relevant rally context. Keeping this
 // derived means Undo, reload, and older saved games all behave consistently.
 function deriveRallyState(game) {
-  let phase = game.startingAction === 'serve' ? PHASES.SERVE : PHASES.PASSING;
-  let startedReceiving = game.startingAction !== 'serve';
+  let currentSetNumber = 1;
+  let startingAction = getSetStartingAction(game, currentSetNumber);
+  let phase = startingAction === 'serve' ? PHASES.SERVE : PHASES.PASSING;
+  let startedReceiving = startingAction !== 'serve';
   let hasAttacked = false;
 
   let lastTeamServer = null;
@@ -306,11 +319,23 @@ function deriveRallyState(game) {
   let setterIsOption = false;
   let directReturner = null;
   let attackSource = null;
+  let lastDefenseAction = null;
 
   for (const e of game.events) {
+    const eventSetNumber = Number(e?.setNumber);
+    if (e?.type !== 'set_boundary' && e?.action !== 'set_end'
+      && [1, 2, 3].includes(eventSetNumber) && eventSetNumber !== currentSetNumber) {
+      currentSetNumber = eventSetNumber;
+      startingAction = getSetStartingAction(game, currentSetNumber);
+      phase = startingAction === 'serve' ? PHASES.SERVE : PHASES.PASSING;
+      startedReceiving = startingAction !== 'serve';
+    }
+
     if (e?.type === 'set_boundary' || e?.action === 'set_end') {
-      phase = game.startingAction === 'serve' ? PHASES.SERVE : PHASES.PASSING;
-      startedReceiving = game.startingAction !== 'serve';
+      currentSetNumber = Math.min(3, Number(e.setNumber) || currentSetNumber) + 1;
+      startingAction = getSetStartingAction(game, currentSetNumber);
+      phase = startingAction === 'serve' ? PHASES.SERVE : PHASES.PASSING;
+      startedReceiving = startingAction !== 'serve';
       hasAttacked = false;
       lastTeamServer = null;
       needsServerRotation = false;
@@ -320,6 +345,7 @@ function deriveRallyState(game) {
       setterIsOption = false;
       directReturner = null;
       attackSource = null;
+      lastDefenseAction = null;
       continue;
     }
 
@@ -352,11 +378,13 @@ function deriveRallyState(game) {
         attackSource = ATTACK_SOURCES.DIG_RETURN;
       }
     }
+    if (e.phase === PHASES.DEFENSE) lastDefenseAction = e.action;
 
     // The passer is the first touch of the rally's offensive exchange. They
     // cannot also be the setter for the following setting phase.
     if (e.phase === PHASES.PASSING && (e.player === 'A' || e.player === 'B')) {
       firstDefender = e.player;
+      if (e.action === 'return') directReturner = e.player;
     }
 
     if (e.phase === PHASES.SETTING && (e.player === 'A' || e.player === 'B')) {
@@ -389,6 +417,7 @@ function deriveRallyState(game) {
       setterIsOption = false;
       directReturner = null;
       attackSource = null;
+      lastDefenseAction = null;
       continue;
     }
 
@@ -427,6 +456,7 @@ function deriveRallyState(game) {
     setterIsOption,
     directReturner,
     attackSource,
+    lastDefenseAction,
   };
 }
 
@@ -439,9 +469,16 @@ function computeCurrentPhase(game) {
 function undoLastEvent(game) {
   const removed = game.events.pop();
   if (removed?.type === 'set_boundary' || removed?.action === 'set_end') {
+    const nextSet = (Number(removed.setNumber) || 1) + 1;
     game.currentSetNumber = Number(removed.setNumber) || 1;
     game.completedSetNumbers = (game.completedSetNumbers || [])
       .map(Number)
       .filter((setNumber) => setNumber !== Number(removed.setNumber));
+    if (game.setStartingActions) {
+      const nextActions = { ...game.setStartingActions };
+      delete nextActions[nextSet];
+      delete nextActions[String(nextSet)];
+      game.setStartingActions = nextActions;
+    }
   }
 }

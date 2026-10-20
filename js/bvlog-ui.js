@@ -56,6 +56,7 @@ function renderNavBar() {
   const brand = document.createElement('button');
   brand.type = 'button';
   brand.className = 'brand-header';
+  brand.dataset.clickSound = 'home';
   brand.title = 'Return to Home';
   brand.setAttribute('aria-label', 'Return to Home');
   brand.addEventListener('click', () => {
@@ -95,8 +96,9 @@ function renderHomeScreen() {
     ['History', 'Browse, filter, and review games.', 'history'],
     ['Player Stats', 'View individual player performance.', 'playerStats'],
     ['Team Stats', 'View combined team performance.', 'teamStats'],
-    ['Stat Rankings', 'Rank the roster in selected statistics.', 'statBreakdown'],
+    ['Stat Rankings', 'View roster rankings in selected statistics.', 'statBreakdown'],
     ['Statistical Breakdowns', 'Explore serving, attacking, setting, and scoring patterns.', 'statisticalBreakdowns'],
+    ['Data Visualization', 'Chart relationships and performance trends over time.', 'visualizations'],
     ['Cloud Sync', 'Connect this device to the shared coaching workspace.', 'cloudSync'],
   ];
 
@@ -669,6 +671,48 @@ function renderStartingActionScreen(setupData) {
   appEl.appendChild(container);
 }
 
+function renderSetStartingActionScreen({ gameId, nextSet }) {
+  clearApp();
+  appEl.appendChild(renderNavBar(null));
+
+  const game = getGameById(gameId);
+  if (!game || game.isComplete) return navigate('history');
+
+  const container = document.createElement('div');
+  container.className = 'screen starting-action-screen';
+
+  const title = document.createElement('h1');
+  title.textContent = `Starting Action for Set ${nextSet}`;
+  container.appendChild(title);
+
+  const subtitle = document.createElement('p');
+  subtitle.className = 'empty-state';
+  subtitle.textContent = 'Is your team serving or receiving first in this set?';
+  container.appendChild(subtitle);
+
+  const buttonRow = document.createElement('div');
+  buttonRow.className = 'starting-action-buttons';
+
+  const startSet = (startingAction) => {
+    if (!advanceToNextSet(gameId, startingAction)) {
+      alert('Could not start the next set — try again.');
+      return;
+    }
+    navigate('liveGame', gameId);
+  };
+
+  buttonRow.appendChild(makeButton('Serving', 'big-choice-btn serve-btn', () => startSet('serve')));
+  buttonRow.appendChild(makeButton('Receiving', 'big-choice-btn receive-btn', () => startSet('receive')));
+  container.appendChild(buttonRow);
+
+  const actions = document.createElement('div');
+  actions.className = 'summary-actions';
+  actions.appendChild(makeButton('Back to Set Completion', 'secondary-btn', () => navigate('setCompletion', gameId)));
+  container.appendChild(actions);
+
+  appEl.appendChild(container);
+}
+
 // ----------------------------
 // Live Tracking screen
 // ----------------------------
@@ -687,7 +731,7 @@ const ACTION_LABELS = {
   error_continue: 'Error (Continue)', aced: 'Aced', oos: 'OOS',
   0: '0', 1: '1', 2: '2', 3: '3', option: 'Option Attack',
   kill: 'Kill', blocked: 'Blocked', continue: 'Continue',
-  block_kill: 'Block Kill', block_touch: 'Block Touch', block_error: 'Block Error',
+  block_kill: 'Block Kill', block_touch: 'Block Touch', block_return: 'Block Return', block_error: 'Block Error',
   dig: 'Dig', dig_error: 'Dig Error',
   opponent_kill: 'Opponent Kill', opponent_error: 'Opponent Error',
   server_swap: 'Server Swap',
@@ -711,6 +755,13 @@ const KILL_QUALITY_LABELS = {
   [KILL_QUALITIES.FULL_CONTACT]: 'Full-Contact',
   [KILL_QUALITIES.OPPONENT_ERROR]: 'Opponent Error',
 };
+
+function markPointOutcomeButton(button, phase, action) {
+  const winner = PHASE_CONFIG[phase]?.actions[action]?.winner;
+  if (winner === 'team') button.dataset.clickSound = 'team-point';
+  if (winner === 'opponent') button.dataset.clickSound = 'opponent-point';
+  return button;
+}
 
 // CSS class per phase, for the color-coded buttons.
 const PHASE_COLOR_CLASS = {
@@ -748,6 +799,12 @@ function otherPlayer(player) {
 function getVisiblePlayers(phase, rallyState) {
   if (phase === PHASES.SERVE && rallyState.servingPlayer) {
     return [rallyState.servingPlayer];
+  }
+
+  // A blocker may make another touch after the initial block touch, so both
+  // players remain available for the setting phase in that specific case.
+  if (phase === PHASES.SETTING && rallyState.lastDefenseAction === 'block_touch') {
+    return ['A', 'B'];
   }
 
   if (phase === PHASES.SETTING && rallyState.firstDefender) {
@@ -824,7 +881,9 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
   if (editContext) {
     const editNote = document.createElement('div');
     editNote.className = 'point-edit-note';
-    editNote.textContent = `Editing Point ${editContext.pointNumber} — later points will be preserved.`;
+    editNote.textContent = editContext.mode === 'insert'
+      ? `Inserting a new point before Point ${editContext.pointNumber} — later points will be renumbered.`
+      : `Editing Point ${editContext.pointNumber} — later points will be preserved.`;
     header.appendChild(editNote);
   }
 
@@ -856,6 +915,30 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     container.appendChild(columns);
   }
 
+  // A block touch normally sends the ball to the setter. If the opponent
+  // wins the ball immediately after that touch, show the opponent-kill
+  // outcome on this Setting screen while logging it as a Defense event so
+  // the block touch remains the defender's only recorded action.
+  if (phase === PHASES.SETTING && rallyState.lastDefenseAction === 'block_touch') {
+    const row = document.createElement('div');
+    row.className = 'teamless-row block-touch-opponent-row';
+    const label = document.createElement('p');
+    label.className = 'teamless-label';
+    label.textContent = 'Opponent';
+    row.appendChild(label);
+
+    const opponentKillButton = document.createElement('button');
+    opponentKillButton.type = 'button';
+    opponentKillButton.className = `action-btn ${colorClass}`;
+    opponentKillButton.textContent = labelForAction('opponent_kill', PHASES.DEFENSE);
+    markPointOutcomeButton(opponentKillButton, PHASES.DEFENSE, 'opponent_kill');
+    opponentKillButton.addEventListener('click', () => {
+      handleActionClick(gameId, PHASES.DEFENSE, null, 'opponent_kill');
+    });
+    row.appendChild(opponentKillButton);
+    container.appendChild(row);
+  }
+
   // --- Teamless row (e.g. opponent errors and opponent kills) ---
   const teamlessKeys = Object.keys(phaseConfig.actions).filter(a => TEAMLESS_ACTIONS.has(a));
   if (teamlessKeys.length > 0) {
@@ -874,6 +957,7 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
       btn.type = 'button';
       btn.className = `action-btn ${colorClass}`;
       btn.textContent = labelForAction(action, phase);
+      markPointOutcomeButton(btn, phase, action);
       btn.addEventListener('click', () => handleActionClick(gameId, phase, null, action));
       row.appendChild(btn);
     }
@@ -898,6 +982,14 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
   allStats.appendChild(renderMetricTable(liveStats, nameA, nameB));
   allStats.appendChild(renderRawStatsTable(liveStats, nameA, nameB));
   container.appendChild(allStats);
+
+  const liveGameLog = document.createElement('details');
+  liveGameLog.className = 'live-stats-details live-game-log-details';
+  const liveGameLogToggle = document.createElement('summary');
+  liveGameLogToggle.textContent = 'Show Updated Game Log';
+  liveGameLog.appendChild(liveGameLogToggle);
+  liveGameLog.appendChild(renderEventLog(game, nameA, nameB));
+  container.appendChild(liveGameLog);
 
   appEl.appendChild(container);
 }
@@ -1044,11 +1136,7 @@ function renderSetCompletionScreen(gameId) {
 
   if (currentSet < 3) {
     actions.appendChild(makeButton(`Move to Set ${currentSet + 1}`, 'primary-btn', () => {
-      if (!advanceToNextSet(gameId)) {
-        alert('Could not start the next set — try again.');
-        return;
-      }
-      navigate('liveGame', gameId);
+      navigate('setStartingAction', { gameId, nextSet: currentSet + 1 });
     }));
     actions.appendChild(makeButton('End Match', 'end-match-btn', () => {
       if (!completeMatchAtSetEnd(gameId)) {
@@ -1085,6 +1173,11 @@ function renderPlayerColumn(gameId, phase, player, playerName, actionKeys, color
     btn.type = 'button';
     btn.className = `action-btn ${colorClass}`;
     btn.textContent = labelForAction(action, phase);
+    // Ace opens the kill-quality follow-up, so the point sound is played
+    // when that final choice is made rather than twice in succession.
+    if (!(phase === PHASES.SERVE && action === 'ace')) {
+      markPointOutcomeButton(btn, phase, action);
+    }
     btn.addEventListener('click', () => handleActionClick(gameId, phase, player, action));
     col.appendChild(btn);
   }
@@ -1192,11 +1285,17 @@ function renderAttackSelection(gameId, game, phase, rallyState, colorClass) {
     typeColumn.appendChild(btn);
   }
 
-  for (const result of Object.keys(PHASE_CONFIG[phase].actions)) {
+  const attackResultOrder = ['kill', 'error', 'continue', 'blocked'];
+  for (const result of attackResultOrder.filter((action) =>
+    Object.prototype.hasOwnProperty.call(PHASE_CONFIG[phase].actions, action),
+  )) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `action-btn ${colorClass} attack-choice-btn`;
     btn.textContent = labelForAction(result, phase);
+    // A kill opens the kill-quality follow-up; direct opponent-scoring
+    // results can use their outcome sound immediately.
+    if (result !== 'kill') markPointOutcomeButton(btn, phase, result);
     btn.addEventListener('click', () => {
       selectedResult = result;
       for (const other of resultButtons) other.classList.remove('selected');
@@ -1233,6 +1332,7 @@ function renderKillQualityStep(gameId, pending) {
     btn.type = 'button';
     btn.className = 'big-choice-btn step-btn';
     btn.textContent = KILL_QUALITY_LABELS[quality];
+    markPointOutcomeButton(btn, pending.phase, pending.action);
     btn.addEventListener('click', () => {
       finalizeEvent(gameId, { ...pending, killQuality: quality });
     });
@@ -1276,12 +1376,21 @@ function finalizeEvent(gameId, pending) {
     const eventConfig = PHASE_CONFIG[pending.phase]?.actions[pending.action];
 
     if (eventConfig?.endsPoint) {
+      const laterEvents = editContext.mode === 'insert'
+        ? editContext.laterEvents.map((laterEvent) => {
+          const laterPointNumber = Number(laterEvent.pointNumber);
+          if (!Number.isInteger(laterPointNumber) || laterPointNumber < editContext.pointNumber) {
+            return laterEvent;
+          }
+          return { ...laterEvent, pointNumber: laterPointNumber + 1 };
+        })
+        : editContext.laterEvents;
       const updatedGame = {
         ...storedGame,
         events: [
           ...editContext.prefixEvents,
           ...editContext.replacementEvents,
-          ...editContext.laterEvents,
+          ...laterEvents,
         ],
       };
       if (!saveGame(updatedGame)) {
@@ -1616,8 +1725,8 @@ function exportPlayerStatsCsv(playerId) {
       rows.push([
         bucketName,
         key,
-        formatStatNumber(value),
-        formatStatNumber(data.perSet.raw[bucketName]?.[key]),
+        formatStatNumber(displayRawStatCount(data.totals.raw, bucketName, key)),
+        formatStatNumber(displayRawStatCount(data.perSet.raw, bucketName, key)),
       ]);
     }
   }
@@ -1638,6 +1747,15 @@ function normalizeImportedGame(game) {
   if (!game || typeof game !== 'object' || !Array.isArray(game.events)) return null;
 
   const importedDefaultSet = [1, 2, 3].includes(Number(game.setNumber)) ? Number(game.setNumber) : 1;
+  const startingAction = game.startingAction === 'receive' ? 'receive' : 'serve';
+  const setStartingActions = { 1: startingAction };
+  for (const setNumber of [2, 3]) {
+    const configured = game.setStartingActions?.[setNumber]
+      ?? game.setStartingActions?.[String(setNumber)];
+    if (configured === 'serve' || configured === 'receive') {
+      setStartingActions[setNumber] = configured;
+    }
+  }
 
   const playedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(game.playedDate || ''))
     ? game.playedDate
@@ -1653,7 +1771,8 @@ function normalizeImportedGame(game) {
     setNumber: 1,
     currentSetNumber: getCurrentSetNumber(game),
     completedSetNumbers: getCompletedSetNumbers(game),
-    startingAction: game.startingAction === 'receive' ? 'receive' : 'serve',
+    startingAction,
+    setStartingActions,
     isComplete: Boolean(game.isComplete),
     status: game.isComplete ? 'completed' : 'paused',
     events: game.events.map((event) => ({
@@ -1837,6 +1956,9 @@ function importCsvBackupText(text) {
     playerBId: playerB.id,
     opponentName: metadata.get('Opponent') || 'Imported Opponent',
     startingAction: metadata.get('Starting Action') === 'receive' ? 'receive' : 'serve',
+    setStartingActions: {
+      1: metadata.get('Starting Action') === 'receive' ? 'receive' : 'serve',
+    },
     isComplete: metadata.has('Status')
       ? normalizeImportText(metadata.get('Status')) === 'completed'
       : true,
@@ -1946,23 +2068,227 @@ function beginPointEdit(gameId, pointNumber) {
   const game = getGameById(gameId);
   if (!game) return;
 
-  const firstPointEventIndex = game.events.findIndex((event) => event.pointNumber === pointNumber);
+  const firstPointEventIndex = game.events.findIndex((event) => Number(event.pointNumber) === Number(pointNumber));
   if (firstPointEventIndex < 0) return;
 
   let lastPointEventIndex = firstPointEventIndex;
   while (lastPointEventIndex + 1 < game.events.length
-    && game.events[lastPointEventIndex + 1].pointNumber === pointNumber) {
+    && Number(game.events[lastPointEventIndex + 1].pointNumber) === Number(pointNumber)) {
     lastPointEventIndex++;
   }
 
   pointEditContext = {
     gameId,
+    mode: 'replace',
     pointNumber,
     prefixEvents: game.events.slice(0, firstPointEventIndex),
     laterEvents: game.events.slice(lastPointEventIndex + 1),
     replacementEvents: [],
   };
   navigate('liveGame', gameId);
+}
+
+function beginPointInsert(gameId, pointNumber) {
+  const game = getGameById(gameId);
+  if (!game) return;
+
+  const firstPointEventIndex = game.events.findIndex((event) => Number(event.pointNumber) === Number(pointNumber));
+  if (firstPointEventIndex < 0) return;
+
+  pointEditContext = {
+    gameId,
+    mode: 'insert',
+    pointNumber,
+    prefixEvents: game.events.slice(0, firstPointEventIndex),
+    laterEvents: game.events.slice(firstPointEventIndex),
+    replacementEvents: [],
+  };
+  navigate('liveGame', gameId);
+}
+
+function beginPointInputEdit(gameId, eventId, eventIndex) {
+  if (!getGameById(gameId)) return;
+  navigate('editPointInput', { gameId, eventId, eventIndex });
+}
+
+function findGameEventForInputEdit(game, eventId, eventIndex) {
+  const events = game?.events || [];
+  const byId = eventId ? events.findIndex((event) => event.id === eventId) : -1;
+  const index = byId >= 0 ? byId : Number(eventIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= events.length) return null;
+  return { event: events[index], index };
+}
+
+function renderPointInputEditScreen(state = {}) {
+  clearApp();
+  appEl.appendChild(renderNavBar('history'));
+
+  const gameId = state.gameId;
+  const game = getGameById(gameId);
+  const target = findGameEventForInputEdit(game, state.eventId, state.eventIndex);
+  if (!game || !target) {
+    const missing = document.createElement('div');
+    missing.className = 'screen';
+    missing.innerHTML = '<p class="empty-state">That logged input could not be found.</p>';
+    appEl.appendChild(missing);
+    return;
+  }
+
+  const { event: originalEvent, index: eventIndex } = target;
+  const container = document.createElement('div');
+  container.className = 'screen edit-game-screen point-input-edit-screen';
+
+  const title = document.createElement('h1');
+  title.textContent = `Edit Point ${originalEvent.pointNumber} Input`;
+  container.appendChild(title);
+
+  const note = document.createElement('p');
+  note.className = 'empty-state';
+  note.textContent = 'Change only this logged input. The rest of the point and all later points will stay in the game log.';
+  container.appendChild(note);
+
+  const warning = document.createElement('p');
+  warning.className = 'point-input-edit-warning';
+  warning.textContent = 'Changing an action can affect the rally flow or score. Use Edit Point if the sequence of actions also needs to be replayed.';
+  container.appendChild(warning);
+
+  const form = document.createElement('form');
+  form.className = 'game-setup-form point-input-edit-form';
+
+  const addSelectField = (labelText, options, value, className = '') => {
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    if (className) label.className = className;
+    const select = document.createElement('select');
+    for (const option of options) {
+      select.appendChild(new Option(option.label, option.value));
+    }
+    select.value = String(value ?? '');
+    label.appendChild(select);
+    form.appendChild(label);
+    return select;
+  };
+
+  const setNumberSelect = addSelectField(
+    'Set',
+    [1, 2, 3].map((setNumber) => ({ label: `Set ${setNumber}`, value: String(setNumber) })),
+    getEventSetNumber(game, originalEvent),
+  );
+
+  const phaseLabel = document.createElement('p');
+  phaseLabel.className = 'point-input-edit-phase';
+  phaseLabel.textContent = `Phase: ${PHASE_CONFIG[originalEvent.phase]?.label ?? originalEvent.phase}`;
+  form.appendChild(phaseLabel);
+
+  const playerOptions = [
+    { label: playerNameForGame(game, 'A'), value: 'A' },
+    { label: playerNameForGame(game, 'B'), value: 'B' },
+    { label: 'Team / Opponent', value: '' },
+  ];
+  const playerSelect = addSelectField(
+    'Player',
+    playerOptions,
+    originalEvent.player,
+  );
+
+  const actionOptions = Object.keys(PHASE_CONFIG[originalEvent.phase]?.actions || {})
+    .map((action) => ({
+      label: labelForAction(action, originalEvent.phase),
+      value: action,
+    }));
+  const actionSelect = addSelectField(
+    originalEvent.phase === PHASES.SETTING ? 'Set Quality / Result' : 'Input',
+    actionOptions,
+    originalEvent.action,
+  );
+
+  const attackTypeSelect = addSelectField(
+    'Attack Type',
+    [
+      { label: 'None', value: '' },
+      ...Object.values(ATTACK_TYPES).map((attackType) => ({
+        label: ATTACK_TYPE_LABELS[attackType],
+        value: attackType,
+      })),
+    ],
+    originalEvent.attackType,
+  );
+
+  const killQualitySelect = addSelectField(
+    'Kill Quality',
+    [
+      { label: 'None', value: '' },
+      ...Object.values(KILL_QUALITIES).map((quality) => ({
+        label: KILL_QUALITY_LABELS[quality],
+        value: quality,
+      })),
+    ],
+    originalEvent.killQuality,
+  );
+
+  const errorMsg = document.createElement('p');
+  errorMsg.className = 'error-msg';
+  errorMsg.hidden = true;
+  form.appendChild(errorMsg);
+
+  const buttonRow = document.createElement('div');
+  buttonRow.className = 'summary-actions';
+  const saveButton = makeButton('Save Input', 'primary-btn', () => form.requestSubmit());
+  const cancelButton = makeButton('Cancel', 'secondary-btn', () => navigate('gameSummary', gameId));
+  buttonRow.appendChild(saveButton);
+  buttonRow.appendChild(cancelButton);
+  form.appendChild(buttonRow);
+
+  form.addEventListener('submit', (submitEvent) => {
+    submitEvent.preventDefault();
+
+    const nextAction = actionSelect.value;
+    const phaseActions = PHASE_CONFIG[originalEvent.phase]?.actions || {};
+    if (!Object.prototype.hasOwnProperty.call(phaseActions, nextAction)) {
+      errorMsg.textContent = 'Choose a valid input for this phase.';
+      errorMsg.hidden = false;
+      return;
+    }
+    if (!TEAMLESS_ACTIONS.has(nextAction) && !['A', 'B'].includes(playerSelect.value)) {
+      errorMsg.textContent = 'Choose the player responsible for this input.';
+      errorMsg.hidden = false;
+      return;
+    }
+
+    const updatedGame = getGameById(gameId);
+    const currentTarget = findGameEventForInputEdit(updatedGame, state.eventId, eventIndex);
+    if (!updatedGame || !currentTarget) {
+      errorMsg.textContent = 'The game changed before this input could be saved. Reopen the game summary and try again.';
+      errorMsg.hidden = false;
+      return;
+    }
+
+    const nextEvent = {
+      ...currentTarget.event,
+      setNumber: Number(setNumberSelect.value),
+      player: TEAMLESS_ACTIONS.has(nextAction) || playerSelect.value === ''
+        ? null
+        : playerSelect.value,
+      action: nextAction,
+      attackType: [PHASES.SIDEOUT, PHASES.TRANSITION].includes(originalEvent.phase)
+        ? (attackTypeSelect.value || null)
+        : null,
+      killQuality: (nextAction === 'ace' || nextAction === 'kill')
+        ? (killQualitySelect.value || null)
+        : null,
+    };
+
+    updatedGame.events[currentTarget.index] = nextEvent;
+    if (!saveGame(updatedGame)) {
+      errorMsg.textContent = 'Could not save the input change — try again.';
+      errorMsg.hidden = false;
+      return;
+    }
+    navigate('gameSummary', gameId);
+  });
+
+  container.appendChild(form);
+  appEl.appendChild(container);
 }
 
 function reopenGameForEditing(gameId, opponentName) {
@@ -2314,15 +2640,58 @@ function renderMatchCard(game, completed, scope = 'match') {
   const heading = document.createElement('div');
   heading.className = 'match-card-heading';
 
+  const headingMain = document.createElement('div');
+  headingMain.className = 'match-card-heading-main';
+
   const matchup = document.createElement('h3');
   matchup.textContent = `${playerNameForGame(game, 'A')} & ${playerNameForGame(game, 'B')} - ${formatPlayedDate(playedDateForGame(game))}`;
-  heading.appendChild(matchup);
+  headingMain.appendChild(matchup);
+
+  const playedSetNumbers = [...new Set([
+    ...getCompletedSetNumbers(game),
+    ...(game.events || [])
+      .filter((event) => event.type !== 'set_boundary' && event.action !== 'set_end')
+      .map((event) => getEventSetNumber(game, event)),
+    ...(!game.isComplete ? [getCurrentSetNumber(game)] : []),
+  ])].sort((a, b) => a - b);
+
+  const scoreStack = document.createElement('div');
+  scoreStack.className = 'match-card-score-stack';
+
+  const selectedScope = normalizeStatsScope(scope);
+  const computedScore = computeScore(game, scope);
+  const setRecord = playedSetNumbers.reduce((record, setNumber) => {
+    const setScore = computeScore(game, setNumber);
+    if (setScore.team > setScore.opponent) record.team += 1;
+    if (setScore.opponent > setScore.team) record.opponent += 1;
+    return record;
+  }, { team: 0, opponent: 0 });
 
   const score = document.createElement('strong');
-  const computedScore = computeScore(game, scope);
   score.className = 'match-card-score';
-  score.textContent = `${computedScore.team} – ${computedScore.opponent}`;
-  heading.appendChild(score);
+  const headlineScore = selectedScope === 'match' && playedSetNumbers.length > 1
+    ? setRecord
+    : computedScore;
+  score.textContent = `${headlineScore.team} – ${headlineScore.opponent}`;
+  if (selectedScope === 'match' && playedSetNumbers.length > 1) {
+    score.title = 'Set record';
+    score.setAttribute('aria-label', `Set record: ${setRecord.team} wins, ${setRecord.opponent} losses`);
+  }
+  scoreStack.appendChild(score);
+
+  if (selectedScope === 'match' && playedSetNumbers.length > 1) {
+    const setScores = document.createElement('div');
+    setScores.className = 'match-card-set-scores';
+    for (const setNumber of playedSetNumbers) {
+      const setScore = computeScore(game, setNumber);
+      const setLine = document.createElement('span');
+      setLine.textContent = `Set ${setNumber}: ${setScore.team} – ${setScore.opponent}`;
+      setScores.appendChild(setLine);
+    }
+    headingMain.appendChild(setScores);
+  }
+  heading.appendChild(headingMain);
+  heading.appendChild(scoreStack);
   card.appendChild(heading);
 
   const meta = document.createElement('p');
@@ -2336,7 +2705,6 @@ function renderMatchCard(game, completed, scope = 'match') {
   const setLabel = document.createElement('span');
   setLabel.className = 'match-card-set';
   const completedSets = getCompletedSetNumbers(game);
-  const selectedScope = normalizeStatsScope(scope);
   setLabel.textContent = selectedScope !== 'match'
     ? `Set ${selectedScope}`
     : game.isComplete
@@ -2353,7 +2721,7 @@ function renderMatchCard(game, completed, scope = 'match') {
   status.textContent = getGameStatusLabel(game);
   footerRight.appendChild(status);
 
-  footer.appendChild(footerRight);
+  scoreStack.appendChild(footerRight);
   card.appendChild(footer);
 
   const actions = document.createElement('div');
@@ -2825,19 +3193,11 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
   list.className = 'player-list';
   const compareControls = document.createElement('div');
   compareControls.className = 'player-compare-controls';
-  const compareButton = makeButton('Compare Selected', 'primary-btn', () => {
-    const selectedIds = [...list.querySelectorAll('input[type="checkbox"]:checked')]
-      .map((checkbox) => checkbox.value);
-    renderPlayerStatsScreen(null, selectedIds);
-  });
-  compareButton.disabled = comparisonPlayerIds.length < 2;
-  compareControls.appendChild(compareButton);
 
   const clearCompareButton = makeButton('Clear Comparison', 'secondary-btn', () => {
     renderPlayerStatsScreen(selectedPlayerId, [], perGameStats);
   });
   clearCompareButton.disabled = comparisonPlayerIds.length === 0;
-  compareControls.appendChild(clearCompareButton);
 
   const compareHint = document.createElement('span');
   compareHint.className = 'player-compare-hint';
@@ -2868,10 +3228,9 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
     checkbox.checked = comparisonPlayerIds.includes(row.playerId);
     checkbox.setAttribute('aria-label', `Select ${playerStatsName(row)} for comparison`);
     checkbox.addEventListener('change', () => {
-      const count = list.querySelectorAll('input[type="checkbox"]:checked').length;
-      compareButton.disabled = count < 2;
-      clearCompareButton.disabled = count === 0;
-      compareHint.textContent = count >= 2 ? `${count} players selected` : 'Select at least two players';
+      const selectedIds = [...list.querySelectorAll('input[type="checkbox"]:checked')]
+        .map((selectedCheckbox) => selectedCheckbox.value);
+      renderPlayerStatsScreen(null, selectedIds, perGameStats);
     });
     compareLabel.appendChild(checkbox);
     const compareText = document.createElement('span');
@@ -2882,6 +3241,11 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
   }
   container.appendChild(compareControls);
   container.appendChild(list);
+
+  const compareActions = document.createElement('div');
+  compareActions.className = 'player-compare-controls';
+  compareActions.appendChild(clearCompareButton);
+  container.appendChild(compareActions);
 
   const comparisonRows = rows.filter((row) => comparisonPlayerIds.includes(row.playerId));
   if (comparisonRows.length >= 2) container.appendChild(renderPlayerComparison(comparisonRows));
@@ -3028,9 +3392,10 @@ function renderPlayerComparisonMetricTable(rows) {
     for (const [label, key, formatter] of group.rows) {
       const rowElement = document.createElement('tr');
       rowElement.appendChild(renderTableCell(label, 'th'));
-      for (const player of rows) {
-        rowElement.appendChild(renderTableCell(formatter(player.stats[key])));
-      }
+      const values = rows.map((player) => player.stats[key]);
+      const valueCells = values.map((value) => renderTableCell(formatter(value)));
+      markBestComparisonCells(valueCells, values);
+      valueCells.forEach((cell) => rowElement.appendChild(cell));
       table.appendChild(rowElement);
     }
   }
@@ -3055,9 +3420,9 @@ function renderPlayerComparisonRawTable(rows) {
     ['Serving', 'serve', [['Ace', 'ace'], ['KO', 'ko'], ['In-System', 'in_system'], ['Error', 'error']]],
     ['Passing', 'passing', [['Aced', 'aced'], ['Opponent Error', 'opponent_error'], ['OOS', 'oos'], ['In-System', 'in_system']]],
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
-    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
+    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Return', 'block_return'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   for (const [phaseLabel, bucketName, actionRows] of phaseRows) {
@@ -3071,9 +3436,14 @@ function renderPlayerComparisonRawTable(rows) {
     for (const [actionLabel, actionKey] of actionRows) {
       const rowElement = document.createElement('tr');
       rowElement.appendChild(renderTableCell(actionLabel, 'th'));
-      for (const player of rows) {
-        rowElement.appendChild(renderTableCell(formatStatNumber(player.stats.raw[bucketName]?.[actionKey] ?? 0)));
-      }
+      const values = rows.map((player) => displayRawStatCount(
+        player.stats.raw,
+        bucketName,
+        actionKey,
+      ));
+      const valueCells = values.map((value) => renderTableCell(formatStatNumber(value)));
+      markBestComparisonCells(valueCells, values);
+      valueCells.forEach((cell) => rowElement.appendChild(cell));
       table.appendChild(rowElement);
     }
   }
@@ -3130,9 +3500,9 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
     ['Serving', 'serve', [['Ace', 'ace'], ['KO', 'ko'], ['In-System', 'in_system'], ['Error', 'error']]],
     ['Passing', 'passing', [['Aced', 'aced'], ['Opponent Error', 'opponent_error'], ['OOS', 'oos'], ['In-System', 'in_system']]],
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
-    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
+    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Return', 'block_return'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   for (const [phaseLabel, bucketName, actionRows] of phaseRows) {
@@ -3146,7 +3516,9 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
     for (const [actionLabel, actionKey] of actionRows) {
       const row = document.createElement('tr');
       row.appendChild(renderTableCell(actionLabel, 'th'));
-      row.appendChild(renderTableCell(formatStatNumber(stats.raw[bucketName]?.[actionKey] ?? 0)));
+      row.appendChild(renderTableCell(formatStatNumber(
+        displayRawStatCount(stats.raw, bucketName, actionKey),
+      )));
       table.appendChild(row);
     }
   }
@@ -3155,7 +3527,7 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
   return section;
 }
 
-function renderGameSummaryScreen(gameId) {
+function renderGameSummaryScreen(gameId, scope = 'match') {
   clearApp();
   appEl.appendChild(renderNavBar('history'));
 
@@ -3170,8 +3542,9 @@ function renderGameSummaryScreen(gameId) {
 
   const nameA = playerNameForGame(game, 'A');
   const nameB = playerNameForGame(game, 'B');
-  const score = computeScore(game);
-  const stats = computeGameStats(game);
+  const activeScope = normalizeStatsScope(scope);
+  const score = computeScore(game, activeScope);
+  const stats = computeGameStats(game, activeScope);
 
   const container = document.createElement('div');
   container.className = 'screen summary-screen';
@@ -3215,6 +3588,21 @@ function renderGameSummaryScreen(gameId) {
   header.appendChild(status);
   container.appendChild(header);
 
+  const scopeControl = document.createElement('label');
+  scopeControl.className = 'summary-scope-control';
+  scopeControl.textContent = 'View stats for';
+  const scopeSelect = document.createElement('select');
+  scopeSelect.appendChild(new Option('Total Match', 'match'));
+  for (const setNumber of getGameLogSetNumbers(game)) {
+    scopeSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
+  }
+  scopeSelect.value = activeScope === 'match' ? 'match' : String(activeScope);
+  scopeSelect.addEventListener('change', () => {
+    navigate('gameSummary', { gameId: game.id, scope: scopeSelect.value });
+  });
+  scopeControl.appendChild(scopeSelect);
+  container.appendChild(scopeControl);
+
   const actions = document.createElement('div');
   actions.className = 'summary-actions';
   actions.appendChild(makeButton('Back to History', 'secondary-btn', () => navigate('history')));
@@ -3234,7 +3622,7 @@ function renderGameSummaryScreen(gameId) {
 
   container.appendChild(renderMetricTable(stats, nameA, nameB));
   container.appendChild(renderRawStatsTable(stats, nameA, nameB));
-  container.appendChild(renderEventLog(game, nameA, nameB));
+  container.appendChild(renderSummaryGameLogs(game, nameA, nameB, activeScope));
 
   appEl.appendChild(container);
 }
@@ -3291,6 +3679,7 @@ function getPerformanceMetricGroups() {
     {
       label: 'Total Points',
       rows: [
+        ['Pt%', 'ptPct', formatStatNumber],
         ['Total Kills / Aces', 'totalKillsAces', formatStatNumber],
         ['Total Errors', 'totalErrors', formatStatNumber],
         ['Total Points Gained', 'totalPointsGained', formatStatNumber],
@@ -3321,6 +3710,9 @@ function getStatBreakdownDefinitions() {
         group: group.label,
         label,
         formatter,
+        format: key === 'ptPct'
+          ? 'ratio'
+          : label.includes('%') ? 'percent' : key === 'avgSetQuality' ? 'decimal' : 'number',
         getValue: (stats) => stats[key],
       });
     }
@@ -3329,17 +3721,23 @@ function getStatBreakdownDefinitions() {
   return definitions;
 }
 
-function renderStatBreakdownSelector(definitions, selectedStatIds, onChange) {
+function renderStatBreakdownSelector(
+  definitions,
+  selectedStatIds,
+  onChange,
+  hintText = 'Select one or more statistics to rank the roster.',
+  titleText = 'Choose Statistics',
+) {
   const panel = document.createElement('section');
   panel.className = 'stat-breakdown-selector';
 
   const title = document.createElement('h2');
-  title.textContent = 'Choose Statistics';
+  title.textContent = titleText;
   panel.appendChild(title);
 
   const hint = document.createElement('p');
   hint.className = 'player-stats-meta';
-  hint.textContent = 'Select one or more statistics to rank the roster.';
+  hint.textContent = hintText;
   panel.appendChild(hint);
 
   const options = document.createElement('div');
@@ -3436,6 +3834,16 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
       values: definitions.map((definition) => definition.getValue(displayStats)),
     };
   });
+
+  // Calculate each column's color from its actual stat-value range before
+  // sorting. This keeps the heatmap tied to performance, not rank position.
+  const valueRanges = definitions.map((definition, definitionIndex) => {
+    const values = rankingRows
+      .map((rankingRow) => rankingRow.values[definitionIndex])
+      .filter((value) => typeof value === 'number' && Number.isFinite(value));
+    if (values.length === 0) return null;
+    return { min: Math.min(...values), max: Math.max(...values) };
+  });
   const sortIndex = definitions.findIndex((definition) => definition.id === sortId);
   rankingRows.sort((a, b) => {
     const aValue = a.values[sortIndex];
@@ -3474,7 +3882,16 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
       const hasStatValue = (row.setCount || row.gameCount) > 0
         && typeof statValue === 'number'
         && Number.isFinite(statValue);
-      tableRow.appendChild(renderTableCell(hasStatValue ? definition.formatter(statValue) : '—'));
+      const valueCell = renderTableCell(hasStatValue ? definition.formatter(statValue) : '—');
+      if (hasStatValue) {
+        const range = valueRanges[definitionIndex];
+        const intensity = range && range.max > range.min
+          ? (statValue - range.min) / (range.max - range.min)
+          : 0;
+        valueCell.classList.add('stat-ranking-value-cell');
+        valueCell.style.backgroundColor = `rgba(34, 197, 94, ${(intensity * 0.78).toFixed(3)})`;
+      }
+      tableRow.appendChild(valueCell);
     });
     table.appendChild(tableRow);
   });
@@ -3502,6 +3919,14 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     : selectedDefinitions[0]?.id;
   const activeSortDirection = sortDirection === 'asc' ? 'asc' : 'desc';
   const activeScope = normalizeStatsScope(scope);
+
+  rememberActiveScreenParam('statBreakdown', {
+    selectedStatIds: activeSelectedIds,
+    perGameStats,
+    sortId: activeSortId,
+    sortDirection: activeSortDirection,
+    scope: activeScope,
+  });
 
   const title = document.createElement('h1');
   title.textContent = `Stat Rankings — ${perGameStats ? 'Per Set Stats' : 'Total Stats'}`;
@@ -3618,6 +4043,11 @@ const STATISTICAL_BREAKDOWN_TABS = [
   ['allAttacking', 'All Attacking'],
   ['setting', 'Setting'],
   ['points', 'Points Gained'],
+];
+
+const VISUALIZATION_TABS = [
+  ['statTrends', 'Time Progression'],
+  ['statCharts', 'Stat Charts'],
 ];
 
 function renderStatisticalBreakdownFilterPanel(filters, onChange) {
@@ -3826,6 +4256,1056 @@ function renderStatisticalBreakdownsScreen(state = {}) {
   appEl.appendChild(container);
 }
 
+// ----------------------------
+// Data visualizations
+// ----------------------------
+
+const DEFAULT_VISUALIZATION_STATE = {
+  tab: 'statTrends',
+  viewMode: 'team',
+  playerId: '',
+  comparePlayerIds: [],
+  partnerId: '',
+  opponent: '',
+  fromDate: '',
+  toDate: '',
+  setNumber: 'match',
+  status: 'completed',
+  result: '',
+  metricId: '',
+  statIds: ['metric:totalPointsGained'],
+  chartMode: 'daily',
+  xStatId: 'metric:totalPointsGained',
+  yStatId: 'metric:totalKillsAces',
+};
+
+function getVisualizationMetricDefinitions(tab) {
+  if (tab === 'statTrends' || tab === 'statCharts') {
+    return getStatBreakdownDefinitions().map((definition) => ({
+      id: definition.id,
+      group: definition.group,
+      label: definition.label,
+      format: definition.format,
+      source: 'ranking',
+      rankingDefinition: definition,
+    }));
+  }
+  const report = computeStatisticalBreakdown([], tab, '', 'match');
+  return report.sections.flatMap((section) => section.columns.map((column) => ({
+    id: `${section.title}::${column.key}`,
+    sectionTitle: section.title,
+    columnKey: column.key,
+    columnLabel: column.label,
+    format: column.format,
+    label: `${section.title} — ${column.label}`,
+  })));
+}
+
+function defaultVisualizationMetric(definitions) {
+  return definitions.find((definition) => definition.format === 'percent')
+    || definitions.find((definition) => definition.columnKey === 'efficiency')
+    || definitions[0];
+}
+
+function renderVisualizationFilterPanel(state, onChange) {
+  const panel = document.createElement('div');
+  panel.className = 'history-filter-panel visualization-filter-panel';
+  const isStatChartsTab = state.tab === 'statCharts';
+
+  const makeField = (labelText, control) => {
+    const field = document.createElement('label');
+    field.className = 'history-filter-field';
+    if (control.type === 'date') field.classList.add('date-filter-field');
+    field.textContent = labelText;
+    field.appendChild(control);
+    return field;
+  };
+
+  const viewSelect = document.createElement('select');
+  viewSelect.appendChild(new Option('Whole team', 'team'));
+  viewSelect.appendChild(new Option('One player', 'player'));
+  viewSelect.appendChild(new Option('Compare players', 'compare'));
+  viewSelect.value = state.viewMode;
+  if (!isStatChartsTab) panel.appendChild(makeField('View', viewSelect));
+
+  const playerSelect = document.createElement('select');
+  playerSelect.appendChild(new Option('Select player', ''));
+  for (const player of loadRoster()) {
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    playerSelect.appendChild(new Option(label, player.id));
+  }
+  playerSelect.value = state.playerId;
+
+  const comparisonField = document.createElement('fieldset');
+  comparisonField.className = 'history-filter-field visualization-comparison-field';
+  const comparisonLegend = document.createElement('legend');
+  comparisonLegend.textContent = 'Players';
+  comparisonField.appendChild(comparisonLegend);
+
+  const comparisonOptions = document.createElement('div');
+  comparisonOptions.className = 'visualization-comparison-options';
+  for (const player of loadRoster()) {
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    const optionLabel = document.createElement('label');
+    optionLabel.className = 'visualization-comparison-option';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = player.id;
+    checkbox.checked = state.comparePlayerIds.includes(player.id);
+    checkbox.setAttribute('aria-label', `Select ${label} for comparison`);
+    optionLabel.appendChild(checkbox);
+    optionLabel.appendChild(document.createTextNode(label));
+    comparisonOptions.appendChild(optionLabel);
+  }
+  comparisonField.appendChild(comparisonOptions);
+
+  const partnerSelect = document.createElement('select');
+  partnerSelect.appendChild(new Option('Any partner', ''));
+  const playedPartnerIds = new Set();
+  const selectedComparisonIds = state.viewMode === 'compare' ? state.comparePlayerIds : [];
+  if ((state.viewMode === 'player' && state.playerId) || selectedComparisonIds.length > 0) {
+    for (const game of loadGameHistory()) {
+      if (game.playerAId === state.playerId && game.playerBId) playedPartnerIds.add(game.playerBId);
+      if (game.playerBId === state.playerId && game.playerAId) playedPartnerIds.add(game.playerAId);
+      for (const playerId of selectedComparisonIds) {
+        if (game.playerAId === playerId && game.playerBId) playedPartnerIds.add(game.playerBId);
+        if (game.playerBId === playerId && game.playerAId) playedPartnerIds.add(game.playerAId);
+      }
+    }
+  }
+  for (const player of loadRoster()) {
+    if (player.id === state.playerId
+      || selectedComparisonIds.includes(player.id)
+      || !playedPartnerIds.has(player.id)) continue;
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    partnerSelect.appendChild(new Option(label, player.id));
+  }
+  partnerSelect.value = state.partnerId;
+  partnerSelect.disabled = state.viewMode === 'team'
+    || (state.viewMode === 'player' && !state.playerId)
+    || (state.viewMode === 'compare' && selectedComparisonIds.length === 0);
+
+  if (!isStatChartsTab) {
+    if (state.viewMode === 'player') panel.appendChild(makeField('Player', playerSelect));
+    if (state.viewMode === 'compare') panel.appendChild(comparisonField);
+    panel.appendChild(makeField('Partner', partnerSelect));
+  }
+
+  const opponentInput = document.createElement('input');
+  opponentInput.type = 'search';
+  opponentInput.placeholder = 'e.g. Smith/Jones';
+  opponentInput.value = state.opponent;
+  panel.appendChild(makeField('Opponent', opponentInput));
+
+  const fromDateInput = document.createElement('input');
+  fromDateInput.type = 'date';
+  fromDateInput.value = state.fromDate;
+  panel.appendChild(makeField('Played from', fromDateInput));
+
+  const toDateInput = document.createElement('input');
+  toDateInput.type = 'date';
+  toDateInput.value = state.toDate;
+  panel.appendChild(makeField('Played through', toDateInput));
+
+  const setSelect = document.createElement('select');
+  setSelect.appendChild(new Option('Full match', 'match'));
+  for (const setNumber of [1, 2, 3]) setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
+  setSelect.value = state.setNumber;
+  panel.appendChild(makeField('View', setSelect));
+
+  const statusSelect = document.createElement('select');
+  statusSelect.appendChild(new Option('Completed only', 'completed'));
+  statusSelect.appendChild(new Option('Any status', ''));
+  statusSelect.appendChild(new Option('Paused', 'paused'));
+  statusSelect.value = state.status;
+  panel.appendChild(makeField('Status', statusSelect));
+
+  const resultSelect = document.createElement('select');
+  resultSelect.appendChild(new Option('Any result', ''));
+  resultSelect.appendChild(new Option('Wins', 'win'));
+  resultSelect.appendChild(new Option('Losses', 'loss'));
+  resultSelect.value = state.result;
+  panel.appendChild(makeField('Result', resultSelect));
+
+  const actions = document.createElement('div');
+  actions.className = 'history-filter-actions';
+  actions.appendChild(makeButton('Clear Filters', 'secondary-btn', () => onChange({
+    ...DEFAULT_VISUALIZATION_STATE,
+    tab: state.tab,
+  })));
+  panel.appendChild(actions);
+
+  const collectFilters = () => onChange({
+    ...state,
+    playerId: playerSelect.value,
+    comparePlayerIds: [...comparisonOptions.querySelectorAll('input[type="checkbox"]:checked')]
+      .map((checkbox) => checkbox.value),
+    partnerId: partnerSelect.value,
+    opponent: opponentInput.value.trim(),
+    fromDate: fromDateInput.value,
+    toDate: toDateInput.value,
+    setNumber: setSelect.value,
+    status: statusSelect.value,
+    result: resultSelect.value,
+  });
+
+  viewSelect.addEventListener('change', () => onChange({
+    ...state,
+    viewMode: viewSelect.value,
+    partnerId: '',
+  }));
+  playerSelect.addEventListener('change', () => onChange({
+    ...state,
+    playerId: playerSelect.value,
+    partnerId: '',
+  }));
+  for (const checkbox of comparisonOptions.querySelectorAll('input[type="checkbox"]')) {
+    checkbox.addEventListener('change', collectFilters);
+  }
+  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+    control.addEventListener('input', collectFilters);
+    control.addEventListener('change', collectFilters);
+  }
+  return panel;
+}
+
+function filterVisualizationGames(games, state) {
+  if (state.viewMode === 'player' && state.playerId) {
+    return filterGamesForPlayerStats(games, state.playerId, state);
+  }
+
+  // Team and comparison views use the common team-level filters. Comparison
+  // players do not need to have played together; each player's matching games
+  // are charted against the same opponent/date/set criteria.
+  let filteredGames = filterGamesForTeamStats(games, {
+    ...state,
+    playerId: '',
+    partnerId: '',
+  });
+  if (state.viewMode === 'compare' && state.partnerId) {
+    const selectedIds = new Set(state.comparePlayerIds || []);
+    filteredGames = filteredGames.filter((game) =>
+      [...selectedIds].some((playerId) =>
+        (game.playerAId === playerId && game.playerBId === state.partnerId)
+        || (game.playerBId === playerId && game.playerAId === state.partnerId),
+      ),
+    );
+  }
+  return filteredGames;
+}
+
+function visualizationSubjects(state) {
+  if (state.viewMode === 'player') {
+    const player = findPlayerById(state.playerId);
+    return player ? [{ playerId: player.id, label: player.name }] : [];
+  }
+  if (state.viewMode === 'compare') {
+    return state.comparePlayerIds
+      .map((playerId) => findPlayerById(playerId))
+      .filter(Boolean)
+      .map((player) => ({ playerId: player.id, label: player.name }));
+  }
+  return [{ playerId: '', label: 'Whole team' }];
+}
+
+function visualizationMetricRows(report, metric) {
+  const section = report.sections.find((item) => item.title === metric.sectionTitle);
+  return section?.rows || [];
+}
+
+function visualizationSubjectStats(game, subject, scope) {
+  const scopedEvents = getGameEventsForScope(game, scope);
+  let events = scopedEvents;
+  if (subject.playerId) {
+    const side = game.playerAId === subject.playerId ? 'A'
+      : game.playerBId === subject.playerId ? 'B' : null;
+    if (!side) return null;
+    events = scopedEvents.filter((event) => event.player === side);
+  } else {
+    events = teamStatsEventsForGame(game).filter((event) =>
+      ![1, 2, 3].includes(Number(scope)) || getEventSetNumber(game, event) === Number(scope),
+    );
+  }
+  const pointTotals = subject.playerId
+    ? computePointTotals(scopedEvents)
+    : computePointTotals(events);
+  return getPlayerStatsForDisplay(
+    computeStats(events, 'team', pointTotals),
+    Math.max(1, getSetCountForScope(game, scope)),
+    true,
+  );
+}
+
+function visualizationAggregateStats(games, subject, scope) {
+  const allEvents = [];
+  const pointTotals = { team: 0, opponent: 0 };
+  let setCount = 0;
+  for (const game of games) {
+    const stats = visualizationSubjectStats(game, subject, scope);
+    if (!stats) continue;
+    const scopedEvents = getGameEventsForScope(game, scope);
+    if (subject.playerId) {
+      const side = game.playerAId === subject.playerId ? 'A' : 'B';
+      allEvents.push(...scopedEvents.filter((event) => event.player === side));
+      const gamePointTotals = computePointTotals(scopedEvents);
+      pointTotals.team += gamePointTotals.team;
+      pointTotals.opponent += gamePointTotals.opponent;
+    } else {
+      const teamEvents = teamStatsEventsForGame(game).filter((event) =>
+        ![1, 2, 3].includes(Number(scope)) || getEventSetNumber(game, event) === Number(scope),
+      );
+      allEvents.push(...teamEvents);
+      const gamePointTotals = computePointTotals(teamEvents);
+      pointTotals.team += gamePointTotals.team;
+      pointTotals.opponent += gamePointTotals.opponent;
+    }
+    setCount += Math.max(1, getSetCountForScope(game, scope));
+  }
+  return getPlayerStatsForDisplay(
+    computeStats(allEvents, 'team', pointTotals),
+    Math.max(1, setCount),
+    true,
+  );
+}
+
+function visualizationShortDate(game) {
+  const value = game.playedDate || game.date;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))
+    ? new Date(`${value}T00:00:00`)
+    : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  return date.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+}
+
+function visualizationDateKey(game) {
+  const value = game.playedDate || game.date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return `unknown:${game.id || ''}`;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function groupVisualizationGamesByDay(games) {
+  const groups = new Map();
+  for (const game of games) {
+    const key = visualizationDateKey(game);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(game);
+  }
+  return [...groups.entries()].map(([key, dayGames]) => ({ key, games: dayGames }));
+}
+
+function visualizationDayWindows(days, chartMode) {
+  if (chartMode !== 'cumulative') return days.map((day) => day.games);
+
+  const gamesThroughDay = [];
+  return days.map((day) => {
+    gamesThroughDay.push(...day.games);
+    return [...gamesThroughDay];
+  });
+}
+
+function visualizationAxisValue(value, format, maxValue) {
+  if (format === 'percent') return `${Math.round(value * 100)}%`;
+  if (format === 'decimal') return value.toFixed(1);
+  return formatStatNumber(value);
+}
+
+function svgElement(tag, attributes = {}) {
+  const element = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+  return element;
+}
+
+function renderVisualizationChart(subjects, games, tab, metric, scope, chartMode = 'daily') {
+  const section = document.createElement('section');
+  section.className = 'visualization-chart-section';
+  const metrics = Array.isArray(metric) ? metric : [metric];
+  const days = groupVisualizationGamesByDay(games);
+  const dayWindows = visualizationDayWindows(days, chartMode);
+
+  const heading = document.createElement('h2');
+  heading.textContent = metrics[0].label;
+  section.appendChild(heading);
+
+  const chartWrap = document.createElement('div');
+  chartWrap.className = 'visualization-chart-wrap';
+  const width = 760;
+  const height = 360;
+  const margin = { top: 24, right: 18, bottom: 58, left: 48 };
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+  const series = [];
+
+  if (tab === 'statTrends') {
+    for (const subject of subjects) {
+      for (const trendMetric of metrics) {
+        const values = dayWindows.map((windowGames) => visualizationAggregateStats(windowGames, subject, scope))
+          .map((stats) => stats ? trendMetric.rankingDefinition.getValue(stats) : null);
+        if (values.some((value) => value !== null && Number.isFinite(value))) {
+          series.push({
+            label: subjects.length > 1 ? `${subject.label} — ${trendMetric.label}` : trendMetric.label,
+            values,
+          });
+        }
+      }
+    }
+  } else {
+    const relationshipMetric = metrics[0];
+    for (const subject of subjects) {
+      const reports = dayWindows.map((windowGames) => computeStatisticalBreakdown(
+        windowGames,
+        tab,
+        subject.playerId,
+        scope,
+      ));
+      const rowLabels = [...new Set(reports.flatMap((report) => visualizationMetricRows(report, relationshipMetric).map((row) => row.label)))];
+      for (const rowLabel of rowLabels) {
+        const values = reports.map((report) => {
+          const row = visualizationMetricRows(report, relationshipMetric).find((item) => item.label === rowLabel);
+          return typeof row?.[relationshipMetric.columnKey] === 'number' && Number.isFinite(row[relationshipMetric.columnKey])
+            ? row[relationshipMetric.columnKey]
+            : null;
+        });
+        if (values.some((value) => value !== null)) {
+          series.push({
+            label: subjects.length > 1 ? `${subject.label} — ${rowLabel}` : rowLabel,
+            values,
+          });
+        }
+      }
+    }
+  }
+
+  if (series.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'There is not enough data for this relationship with the selected filters.';
+    chartWrap.appendChild(empty);
+    section.appendChild(chartWrap);
+    return section;
+  }
+
+  const allValues = series.flatMap((item) => item.values).filter((value) => value !== null);
+  const chartFormat = metrics[0].format;
+  const maxValue = chartFormat === 'percent'
+    ? 1
+    : Math.max(1, ...allValues);
+  const svg = svgElement('svg', {
+    viewBox: `0 0 ${width} ${height}`,
+    role: 'img',
+    'aria-label': `${metric.label} over time`,
+  });
+  svg.appendChild(svgElement('rect', { x: 0, y: 0, width, height, class: 'visualization-chart-bg' }));
+
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const fraction = tick / 4;
+    const y = margin.top + chartHeight - fraction * chartHeight;
+    svg.appendChild(svgElement('line', {
+      x1: margin.left, x2: width - margin.right, y1: y, y2: y,
+      class: 'visualization-grid-line',
+    }));
+    const label = svgElement('text', {
+      x: margin.left - 8, y: y + 4, class: 'visualization-axis-label', 'text-anchor': 'end',
+    });
+    label.textContent = visualizationAxisValue(maxValue * fraction, chartFormat, maxValue);
+    svg.appendChild(label);
+  }
+
+  const xFor = (index) => days.length === 1
+    ? margin.left + chartWidth / 2
+    : margin.left + (index / (days.length - 1)) * chartWidth;
+  const yFor = (value) => margin.top + chartHeight - (value / maxValue) * chartHeight;
+  days.forEach((day, index) => {
+    const label = svgElement('text', {
+      x: xFor(index), y: height - 23, class: 'visualization-axis-label', 'text-anchor': 'middle',
+    });
+    label.textContent = visualizationShortDate(day.games[0]);
+    svg.appendChild(label);
+  });
+
+  // SJSU Spartan blue and gold are the default chart colors. Additional
+  // series use lighter and darker shades of those same brand colors.
+  const colors = [
+    '#0055A2', // SJSU blue
+    '#E5A823', // SJSU gold
+    '#939597', // SJSU gray
+    '#FFFFFF', // white
+    '#2D78BD',
+    '#C98F1A',
+    '#6FA3D8',
+    '#A96F12',
+  ];
+  series.forEach((item, seriesIndex) => {
+    const color = colors[seriesIndex % colors.length];
+    let path = '';
+    item.values.forEach((value, index) => {
+      if (value === null) {
+        if (path) {
+          svg.appendChild(svgElement('path', { d: path, stroke: color, class: 'visualization-line' }));
+          path = '';
+        }
+        return;
+      }
+      path += `${path ? ' L' : 'M'} ${xFor(index)} ${yFor(value)}`;
+    });
+    if (path) svg.appendChild(svgElement('path', { d: path, stroke: color, class: 'visualization-line' }));
+    item.values.forEach((value, index) => {
+      if (value === null) return;
+      svg.appendChild(svgElement('circle', {
+        cx: xFor(index), cy: yFor(value), r: 3.5, fill: color, class: 'visualization-point',
+      }));
+    });
+  });
+
+  chartWrap.appendChild(svg);
+  const legend = document.createElement('div');
+  legend.className = 'visualization-legend';
+  series.forEach((item, index) => {
+    const entry = document.createElement('span');
+    entry.className = 'visualization-legend-item';
+    const swatch = document.createElement('span');
+    swatch.className = 'visualization-legend-swatch';
+    swatch.style.backgroundColor = colors[index % colors.length];
+    entry.appendChild(swatch);
+    entry.appendChild(document.createTextNode(item.label));
+    legend.appendChild(entry);
+  });
+  chartWrap.appendChild(legend);
+  section.appendChild(chartWrap);
+  return section;
+}
+
+function renderVisualizationChartModeControl(chartMode, onChange) {
+  const fieldset = document.createElement('fieldset');
+  fieldset.className = 'visualization-chart-mode';
+
+  const legend = document.createElement('legend');
+  legend.textContent = 'Chart aggregation';
+  fieldset.appendChild(legend);
+
+  const options = [
+    ['daily', 'Non-cumulative — Single-day stats'],
+    ['cumulative', 'Cumulative — Lifetime stats'],
+  ];
+  for (const [value, labelText] of options) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'visualization-chart-mode';
+    input.value = value;
+    input.checked = chartMode === value;
+    input.addEventListener('change', () => {
+      if (input.checked) onChange(value);
+    });
+    label.appendChild(input);
+    label.appendChild(document.createTextNode(labelText));
+    fieldset.appendChild(label);
+  }
+
+  return fieldset;
+}
+
+function getStatChartPoints(games, scope, xDefinition, yDefinition) {
+  return getPlayerStatsRows(games, scope)
+    .filter((row) => !findPlayerById(row.playerId)?.practicePlayer)
+    .map((row) => {
+      const displayStats = getPlayerStatsForDisplay(
+        row.stats,
+        row.setCount || row.gameCount,
+        true,
+      );
+      const x = xDefinition.rankingDefinition.getValue(displayStats);
+      const y = yDefinition.rankingDefinition.getValue(displayStats);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || (row.setCount || row.gameCount) === 0) return null;
+      return {
+        label: playerStatsName(row),
+        x,
+        y,
+      };
+    })
+    .filter(Boolean);
+}
+
+function calculateStatChartRegression(points) {
+  if (points.length === 0) return null;
+  const meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const meanY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const denominator = points.reduce((sum, point) => sum + ((point.x - meanX) ** 2), 0);
+  const slope = denominator === 0
+    ? 0
+    : points.reduce((sum, point) => sum + ((point.x - meanX) * (point.y - meanY)), 0) / denominator;
+  return { slope, intercept: meanY - slope * meanX };
+}
+
+function renderStatChartScatter(points, xDefinition, yDefinition) {
+  const section = document.createElement('section');
+  section.className = 'visualization-chart-section';
+
+  const heading = document.createElement('h2');
+  heading.textContent = `${xDefinition.label} vs ${yDefinition.label}`;
+  section.appendChild(heading);
+
+  const chartWrap = document.createElement('div');
+  chartWrap.className = 'visualization-chart-wrap';
+  if (points.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No players have completed-game data for both selected statistics.';
+    chartWrap.appendChild(empty);
+    section.appendChild(chartWrap);
+    return section;
+  }
+
+  const width = 560;
+  const height = 560;
+  const margin = { top: 28, right: 28, bottom: 86, left: 82 };
+  const chartWidth = width - margin.left - margin.right;
+  const chartHeight = height - margin.top - margin.bottom;
+  const xValues = points.map((point) => point.x);
+  const yValues = points.map((point) => point.y);
+  const xRawMin = Math.min(...xValues);
+  const xRawMax = Math.max(...xValues);
+  const yRawMin = Math.min(...yValues);
+  const yRawMax = Math.max(...yValues);
+  const rangePadding = (min, max, format) => {
+    const range = max - min;
+    if (range > 0) return range * 0.08;
+    if (format === 'percent') return 0.1;
+    return Math.max(Math.abs(min) * 0.1, 1);
+  };
+  const xPadding = rangePadding(xRawMin, xRawMax, xDefinition.format);
+  const yPadding = rangePadding(yRawMin, yRawMax, yDefinition.format);
+  const xMin = xDefinition.format === 'percent' ? 0 : xRawMin - xPadding;
+  const xMax = xDefinition.format === 'percent' ? 1 : xRawMax + xPadding;
+  const yMin = yDefinition.format === 'percent' ? 0 : yRawMin - yPadding;
+  const yMax = yDefinition.format === 'percent' ? 1 : yRawMax + yPadding;
+  const xFor = (value) => margin.left + ((value - xMin) / (xMax - xMin)) * chartWidth;
+  const yFor = (value) => margin.top + chartHeight - ((value - yMin) / (yMax - yMin)) * chartHeight;
+  const formatValue = (value, definition) => definition.rankingDefinition.formatter(value);
+
+  const svg = svgElement('svg', {
+    viewBox: `0 0 ${width} ${height}`,
+    role: 'img',
+    'aria-label': `${xDefinition.label} versus ${yDefinition.label}`,
+  });
+  svg.appendChild(svgElement('rect', { x: 0, y: 0, width, height, class: 'visualization-chart-bg' }));
+
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const fraction = tick / 4;
+    const xValue = xMin + fraction * (xMax - xMin);
+    const yValue = yMin + fraction * (yMax - yMin);
+    const x = xFor(xValue);
+    const y = yFor(yValue);
+    svg.appendChild(svgElement('line', {
+      x1: x, x2: x, y1: margin.top, y2: margin.top + chartHeight,
+      class: 'visualization-grid-line',
+    }));
+    svg.appendChild(svgElement('line', {
+      x1: margin.left, x2: margin.left + chartWidth, y1: y, y2: y,
+      class: 'visualization-grid-line',
+    }));
+
+    const xLabel = svgElement('text', {
+      x, y: height - 42, class: 'visualization-axis-label', 'text-anchor': 'middle',
+    });
+    xLabel.textContent = formatValue(xValue, xDefinition);
+    svg.appendChild(xLabel);
+
+    const yLabel = svgElement('text', {
+      x: margin.left - 10, y: y + 4, class: 'visualization-axis-label', 'text-anchor': 'end',
+    });
+    yLabel.textContent = formatValue(yValue, yDefinition);
+    svg.appendChild(yLabel);
+  }
+
+  const regression = calculateStatChartRegression(points);
+  const regressionY1 = regression.intercept + regression.slope * xMin;
+  const regressionY2 = regression.intercept + regression.slope * xMax;
+  svg.appendChild(svgElement('line', {
+    x1: xFor(xMin), y1: yFor(regressionY1),
+    x2: xFor(xMax), y2: yFor(regressionY2),
+    class: 'visualization-regression-line',
+  }));
+
+  const placedLabelBounds = [];
+  const labelBounds = (x, y, labelWidth, textAnchor) => ({
+    left: textAnchor === 'start' ? x : x - labelWidth,
+    right: textAnchor === 'start' ? x + labelWidth : x,
+    top: y - 12,
+    bottom: y + 3,
+  });
+  const labelsOverlap = (first, second) => first.left < second.right + 3
+    && first.right + 3 > second.left
+    && first.top < second.bottom + 3
+    && first.bottom + 3 > second.top;
+  const isLabelInBounds = (bounds) => bounds.left >= margin.left + 2
+    && bounds.right <= margin.left + chartWidth - 2
+    && bounds.top >= margin.top + 2
+    && bounds.bottom <= margin.top + chartHeight - 2;
+
+  for (const point of points) {
+    const circleX = xFor(point.x);
+    const circleY = yFor(point.y);
+    svg.appendChild(svgElement('circle', {
+      cx: circleX, cy: circleY, r: 5, fill: '#0055A2', class: 'visualization-point',
+    }));
+    const labelWidth = Math.max(24, point.label.length * 5.5);
+    const regressionYAtPoint = yFor(regression.intercept + regression.slope * point.x);
+    const lineIsNearPoint = Math.abs(circleY - regressionYAtPoint) < 18;
+    const verticalOffsets = [];
+    const firstOffsets = lineIsNearPoint ? [18, -8] : [-8, 18];
+    verticalOffsets.push(...firstOffsets);
+    for (let distance = 32; distance <= chartHeight; distance += 16) {
+      verticalOffsets.push(distance, -distance);
+    }
+    const candidates = [];
+    for (const offset of verticalOffsets) {
+      candidates.push({ x: circleX + 8, y: circleY + offset, textAnchor: 'start' });
+      candidates.push({ x: circleX - 8, y: circleY + offset, textAnchor: 'end' });
+    }
+    const selectedCandidate = candidates.find((candidate) => {
+      const bounds = labelBounds(candidate.x, candidate.y, labelWidth, candidate.textAnchor);
+      return isLabelInBounds(bounds) && !placedLabelBounds.some((placed) => labelsOverlap(bounds, placed));
+    }) || candidates.find((candidate) => isLabelInBounds(
+      labelBounds(candidate.x, candidate.y, labelWidth, candidate.textAnchor),
+    )) || candidates[0];
+
+    const textAnchor = selectedCandidate.textAnchor;
+    const minX = textAnchor === 'start'
+      ? margin.left + 3
+      : margin.left + labelWidth;
+    const maxX = textAnchor === 'start'
+      ? margin.left + chartWidth - labelWidth
+      : margin.left + chartWidth - 3;
+    const labelX = Math.min(maxX, Math.max(minX, selectedCandidate.x));
+    const labelY = Math.min(
+      margin.top + chartHeight - 3,
+      Math.max(margin.top + 14, selectedCandidate.y),
+    );
+    placedLabelBounds.push(labelBounds(labelX, labelY, labelWidth, textAnchor));
+    const pointLabel = svgElement('text', {
+      x: labelX, y: labelY, class: 'visualization-point-label', 'text-anchor': textAnchor,
+    });
+    pointLabel.textContent = point.label;
+    svg.appendChild(pointLabel);
+  }
+
+  const xAxisLabel = svgElement('text', {
+    x: margin.left + chartWidth / 2, y: height - 12,
+    class: 'visualization-axis-title', 'text-anchor': 'middle',
+  });
+  xAxisLabel.textContent = xDefinition.label;
+  svg.appendChild(xAxisLabel);
+  const yAxisLabel = svgElement('text', {
+    x: 15, y: margin.top + chartHeight / 2,
+    class: 'visualization-axis-title', 'text-anchor': 'middle',
+    transform: `rotate(-90 15 ${margin.top + chartHeight / 2})`,
+  });
+  yAxisLabel.textContent = yDefinition.label;
+  svg.appendChild(yAxisLabel);
+
+  chartWrap.appendChild(svg);
+  const legend = document.createElement('div');
+  legend.className = 'visualization-legend';
+  const pointLegend = document.createElement('span');
+  pointLegend.className = 'visualization-legend-item';
+  const pointSwatch = document.createElement('span');
+  pointSwatch.className = 'visualization-legend-swatch';
+  pointSwatch.style.backgroundColor = '#0055A2';
+  pointLegend.appendChild(pointSwatch);
+  pointLegend.appendChild(document.createTextNode('Player'));
+  legend.appendChild(pointLegend);
+  const regressionLegend = document.createElement('span');
+  regressionLegend.className = 'visualization-legend-item';
+  const regressionSwatch = document.createElement('span');
+  regressionSwatch.className = 'visualization-legend-line';
+  regressionLegend.appendChild(regressionSwatch);
+  regressionLegend.appendChild(document.createTextNode('Linear regression'));
+  legend.appendChild(regressionLegend);
+  chartWrap.appendChild(legend);
+  section.appendChild(chartWrap);
+  return section;
+}
+
+function renderStatChartValuesTable(points, xDefinition, yDefinition) {
+  const section = document.createElement('section');
+  section.className = 'visualization-snapshot-section';
+  const title = document.createElement('h2');
+  title.textContent = 'Player Values';
+  section.appendChild(title);
+
+  const table = document.createElement('table');
+  table.className = 'stats-table visualization-snapshot-table';
+  table.appendChild(renderStatsHeader(['Player', xDefinition.label, yDefinition.label]));
+  for (const point of points) {
+    const row = document.createElement('tr');
+    row.appendChild(renderTableCell(point.label, 'th'));
+    row.appendChild(renderTableCell(xDefinition.rankingDefinition.formatter(point.x)));
+    row.appendChild(renderTableCell(yDefinition.rankingDefinition.formatter(point.y)));
+    table.appendChild(row);
+  }
+  section.appendChild(table);
+  return section;
+}
+
+function renderStatChartAxisSelector(definitions, xStatId, yStatId, onChange) {
+  const panel = document.createElement('section');
+  panel.className = 'stat-breakdown-selector stat-chart-axis-selector';
+  const title = document.createElement('h2');
+  title.textContent = 'Choose Chart Axes';
+  panel.appendChild(title);
+  const hint = document.createElement('p');
+  hint.className = 'player-stats-meta';
+  hint.textContent = 'Choose two Player Rankings statistics to compare across the roster.';
+  panel.appendChild(hint);
+
+  const controls = document.createElement('div');
+  controls.className = 'stat-chart-axis-controls';
+  const makeAxisField = (labelText, value, axis) => {
+    const field = document.createElement('label');
+    field.className = 'history-filter-field';
+    field.textContent = labelText;
+    const select = document.createElement('select');
+    for (const definition of definitions) select.appendChild(new Option(definition.label, definition.id));
+    select.value = value;
+    select.addEventListener('change', () => onChange({
+      xStatId: axis === 'x' ? select.value : xStatId,
+      yStatId: axis === 'y' ? select.value : yStatId,
+    }));
+    field.appendChild(select);
+    controls.appendChild(field);
+  };
+  makeAxisField('X-axis statistic', xStatId, 'x');
+  makeAxisField('Y-axis statistic', yStatId, 'y');
+  panel.appendChild(controls);
+  return panel;
+}
+
+function renderVisualizationSnapshot(subjects, games, tab, metric, scope) {
+  const section = document.createElement('section');
+  section.className = 'visualization-snapshot-section';
+  const title = document.createElement('h2');
+  title.textContent = tab === 'statTrends' ? 'Selected Stats Summary' : 'Filtered Summary';
+  section.appendChild(title);
+
+  const table = document.createElement('table');
+  table.className = 'stats-table visualization-snapshot-table';
+  table.appendChild(renderStatsHeader(['Relationship', ...subjects.map((subject) => subject.label)]));
+  if (tab === 'statTrends') {
+    const metrics = Array.isArray(metric) ? metric : [metric];
+    for (const trendMetric of metrics) {
+      const row = document.createElement('tr');
+      row.appendChild(renderTableCell(trendMetric.label, 'th'));
+      subjects.forEach((subject) => {
+        const stats = visualizationAggregateStats(games, subject, scope);
+        row.appendChild(renderTableCell(formatStatisticalBreakdownValue(
+          trendMetric.rankingDefinition.getValue(stats),
+          trendMetric.format,
+        )));
+      });
+      table.appendChild(row);
+    }
+  } else {
+    const relationshipMetric = Array.isArray(metric) ? metric[0] : metric;
+    const reports = subjects.map((subject) => computeStatisticalBreakdown(games, tab, subject.playerId, scope));
+    const rows = [...new Set(reports.flatMap((report) => visualizationMetricRows(report, relationshipMetric).map((row) => row.label)))];
+    for (const rowLabel of rows) {
+      const row = document.createElement('tr');
+      row.appendChild(renderTableCell(rowLabel, 'th'));
+      reports.forEach((report) => {
+        const reportRow = visualizationMetricRows(report, relationshipMetric).find((item) => item.label === rowLabel);
+        row.appendChild(renderTableCell(formatStatisticalBreakdownValue(reportRow?.[relationshipMetric.columnKey], relationshipMetric.format)));
+      });
+      table.appendChild(row);
+    }
+  }
+  section.appendChild(table);
+  return section;
+}
+
+function renderVisualizationsScreen(state = {}) {
+  const activeState = {
+    ...DEFAULT_VISUALIZATION_STATE,
+    ...(state.filters || state),
+  };
+  if (!VISUALIZATION_TABS.some(([id]) => id === activeState.tab)) activeState.tab = 'statTrends';
+  if (!['team', 'player', 'compare'].includes(activeState.viewMode)) activeState.viewMode = 'team';
+  if (!['daily', 'cumulative'].includes(activeState.chartMode)) activeState.chartMode = 'daily';
+  if (activeState.tab === 'statCharts') {
+    activeState.viewMode = 'team';
+    activeState.playerId = '';
+    activeState.comparePlayerIds = [];
+    activeState.partnerId = '';
+  }
+  if (!Array.isArray(activeState.comparePlayerIds)) activeState.comparePlayerIds = [];
+  if (!Array.isArray(activeState.statIds)) activeState.statIds = [...DEFAULT_VISUALIZATION_STATE.statIds];
+  const definitions = getVisualizationMetricDefinitions(activeState.tab);
+  let selectedMetrics;
+  if (activeState.tab === 'statTrends') {
+    const validStatIds = activeState.statIds.filter((id) => definitions.some((definition) => definition.id === id));
+    activeState.statIds = validStatIds;
+    selectedMetrics = definitions.filter((definition) => validStatIds.includes(definition.id));
+    activeState.metricId = '';
+  } else if (activeState.tab === 'statCharts') {
+    const defaultX = definitions.find((definition) => definition.id === DEFAULT_VISUALIZATION_STATE.xStatId)
+      || definitions[0];
+    const defaultY = definitions.find((definition) => definition.id === DEFAULT_VISUALIZATION_STATE.yStatId)
+      || definitions.find((definition) => definition.id !== defaultX?.id)
+      || definitions[0];
+    const xDefinition = definitions.find((definition) => definition.id === activeState.xStatId) || defaultX;
+    let yDefinition = definitions.find((definition) => definition.id === activeState.yStatId) || defaultY;
+    if (yDefinition?.id === xDefinition?.id) {
+      yDefinition = definitions.find((definition) => definition.id !== xDefinition.id) || yDefinition;
+    }
+    activeState.xStatId = xDefinition?.id || '';
+    activeState.yStatId = yDefinition?.id || '';
+    selectedMetrics = [xDefinition, yDefinition].filter(Boolean);
+    activeState.metricId = '';
+  } else {
+    const selectedMetric = definitions.find((definition) => definition.id === activeState.metricId)
+      || defaultVisualizationMetric(definitions);
+    selectedMetrics = selectedMetric ? [selectedMetric] : [];
+    activeState.metricId = selectedMetric?.id || '';
+  }
+  if (typeof rememberActiveScreenParam === 'function') rememberActiveScreenParam('visualizations', activeState);
+
+  clearApp();
+  appEl.appendChild(renderNavBar('home'));
+  const container = document.createElement('div');
+  container.className = 'screen visualizations-screen';
+
+  const title = document.createElement('h1');
+  title.textContent = 'Data Visualization';
+  container.appendChild(title);
+  const subtitle = document.createElement('p');
+  subtitle.className = 'empty-state';
+  subtitle.textContent = 'Chart statistical relationships across completed matches or selected sets.';
+  container.appendChild(subtitle);
+
+  const tabBar = document.createElement('div');
+  tabBar.className = 'statistical-breakdown-tabs visualization-tabs';
+  for (const [tabId, label] of VISUALIZATION_TABS) {
+    const button = makeButton(label, tabId === activeState.tab ? 'primary-btn' : 'secondary-btn', () => {
+      renderVisualizationsScreen({ ...activeState, tab: tabId, metricId: '' });
+    });
+    button.classList.add('statistical-breakdown-tab');
+    button.setAttribute('aria-pressed', String(tabId === activeState.tab));
+    tabBar.appendChild(button);
+  }
+  container.appendChild(tabBar);
+  container.appendChild(renderVisualizationFilterPanel(activeState, (nextState) => {
+    renderVisualizationsScreen(nextState);
+  }));
+
+  if (activeState.tab === 'statTrends') {
+    container.appendChild(renderStatBreakdownSelector(
+      definitions,
+      activeState.statIds,
+      (nextStatIds) => renderVisualizationsScreen({ ...activeState, statIds: nextStatIds }),
+      'Select one or more Player Rankings statistics to chart over time.',
+      'Choose Stats to Chart',
+    ));
+  } else if (activeState.tab === 'statCharts') {
+    container.appendChild(renderStatChartAxisSelector(
+      definitions,
+      activeState.xStatId,
+      activeState.yStatId,
+      ({ xStatId, yStatId }) => renderVisualizationsScreen({
+        ...activeState,
+        xStatId,
+        yStatId,
+      }),
+    ));
+  }
+
+  const matchingGames = filterVisualizationGames(loadGameHistory(), activeState);
+  const completedGames = matchingGames
+    .filter((game) => game.isComplete)
+    .sort((a, b) => new Date(a.playedDate || a.date) - new Date(b.playedDate || b.date));
+  const isStatChartsTab = activeState.tab === 'statCharts';
+  const subjects = isStatChartsTab ? [] : visualizationSubjects(activeState);
+
+  if (!isStatChartsTab && activeState.viewMode === 'compare' && subjects.length < 2) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'Select at least two players to compare.';
+    container.appendChild(empty);
+  } else if (!isStatChartsTab && subjects.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'Select a player to view individual visualizations.';
+    container.appendChild(empty);
+  } else if (completedGames.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = 'No completed matches match the selected filters.';
+    container.appendChild(empty);
+  } else {
+    const scope = normalizeStatsScope(activeState.setNumber);
+    if (selectedMetrics.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-state';
+      empty.textContent = 'Select at least one statistic to chart.';
+      container.appendChild(empty);
+    } else {
+      if (activeState.tab === 'statTrends') {
+        container.appendChild(renderVisualizationChartModeControl(
+          activeState.chartMode,
+          (chartMode) => renderVisualizationsScreen({ ...activeState, chartMode }),
+        ));
+        for (const metric of selectedMetrics) {
+          container.appendChild(renderVisualizationChart(
+            subjects,
+            completedGames,
+            activeState.tab,
+            metric,
+            scope,
+            activeState.chartMode,
+          ));
+        }
+        container.appendChild(renderVisualizationSnapshot(
+          subjects,
+          completedGames,
+          activeState.tab,
+          selectedMetrics,
+          scope,
+        ));
+      } else if (activeState.tab === 'statCharts') {
+        const points = getStatChartPoints(
+          completedGames,
+          scope,
+          selectedMetrics[0],
+          selectedMetrics[1],
+        );
+        container.appendChild(renderStatChartScatter(points, selectedMetrics[0], selectedMetrics[1]));
+        container.appendChild(renderStatChartValuesTable(points, selectedMetrics[0], selectedMetrics[1]));
+      } else {
+        container.appendChild(renderVisualizationChart(
+          subjects,
+          completedGames,
+          activeState.tab,
+          selectedMetrics[0],
+          scope,
+          activeState.chartMode,
+        ));
+        container.appendChild(renderVisualizationSnapshot(
+          subjects,
+          completedGames,
+          activeState.tab,
+          selectedMetrics[0],
+          scope,
+        ));
+      }
+    }
+  }
+
+  appEl.appendChild(container);
+}
+
 function renderLiveStatsSummary(stats, nameA, nameB) {
   const section = document.createElement('section');
   section.className = 'summary-section live-stats-summary';
@@ -3929,6 +5409,36 @@ function renderTableCell(value, tagName = 'td') {
   return cell;
 }
 
+function markBestComparisonCells(cells, values) {
+  const numericValues = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  if (numericValues.length === 0) return;
+
+  const bestValue = Math.max(...numericValues);
+  values.forEach((value, index) => {
+    if (Number(value) === bestValue) {
+      cells[index].classList.add('comparison-best-value');
+    }
+  });
+}
+
+// Dig Returns are included in the aggregate Dig total, while remaining a
+// separate row so coaches can still distinguish ordinary digs from returns.
+// Block Returns follow the same pattern: they are separately visible while
+// contributing to the combined Block Touch total.
+function displayRawStatCount(raw, bucketName, actionKey) {
+  const bucket = raw?.[bucketName] || {};
+  const value = Number(bucket[actionKey] || 0);
+  if (bucketName === 'defense' && actionKey === 'dig') {
+    return value + Number(bucket.dig_return || 0);
+  }
+  if (bucketName === 'defense' && actionKey === 'block_touch') {
+    return value + Number(bucket.block_return || 0);
+  }
+  return value;
+}
+
 function renderRawStatsTable(stats, nameA, nameB) {
   const section = document.createElement('section');
   section.className = 'summary-section';
@@ -3945,9 +5455,9 @@ function renderRawStatsTable(stats, nameA, nameB) {
     ['Serving', 'serve', [['Ace', 'ace'], ['KO', 'ko'], ['In-System', 'in_system'], ['Error', 'error']]],
     ['Passing', 'passing', [['Aced', 'aced'], ['OOS', 'oos'], ['In-System', 'in_system']]],
     ['Setting', 'setting', [['Error (Point End)', 'error'], ['Error (Continue)', 'error_continue'], ['1', '1'], ['2', '2'], ['3', '3'], ['Option Attack', 'option']]],
-    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Blocked', 'blocked'], ['Continue', 'continue']]],
-    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
+    ['Sideout', 'sideout', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Transition', 'transition', [['Kill', 'kill'], ['Error', 'error'], ['Continue', 'continue'], ['Blocked', 'blocked']]],
+    ['Defense', 'defense', [['Block Kill', 'block_kill'], ['Block Touch', 'block_touch'], ['Block Return', 'block_return'], ['Block Error', 'block_error'], ['Dig', 'dig'], ['Dig Return', 'dig_return'], ['Dig Error', 'dig_error'], ['Freeball Receive', 'receive']]],
   ];
 
   const values = [stats.playerA.raw, stats.playerB.raw, stats.team.raw];
@@ -3964,7 +5474,9 @@ function renderRawStatsTable(stats, nameA, nameB) {
       const row = document.createElement('tr');
       row.appendChild(renderTableCell(actionLabel, 'th'));
       for (const raw of values) {
-        row.appendChild(renderTableCell(formatStatNumber(raw[bucketName]?.[actionKey] ?? 0)));
+        row.appendChild(renderTableCell(formatStatNumber(
+          displayRawStatCount(raw, bucketName, actionKey),
+        )));
       }
       table.appendChild(row);
     }
@@ -3998,7 +5510,44 @@ function getEventStartScores(game) {
   return startScores;
 }
 
-function renderEventLog(game, nameA, nameB) {
+function getGameLogSetNumbers(game) {
+  const setNumbers = new Set(getCompletedSetNumbers(game));
+  for (const event of game.events || []) {
+    setNumbers.add(getEventSetNumber(game, event));
+  }
+  if (!game.isComplete) setNumbers.add(getCurrentSetNumber(game));
+  if (setNumbers.size === 0) setNumbers.add(getCurrentSetNumber(game));
+  return [...setNumbers].sort((a, b) => a - b);
+}
+
+function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
+  const section = document.createElement('section');
+  section.className = 'summary-section summary-game-logs';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Game Log';
+  section.appendChild(title);
+
+  const activeScope = normalizeStatsScope(scope);
+  const setNumbers = activeScope === 'match'
+    ? getGameLogSetNumbers(game)
+    : [activeScope];
+  const isMultiSet = activeScope === 'match' && setNumbers.length > 1;
+  for (const setNumber of setNumbers) {
+    const details = document.createElement('details');
+    details.className = 'live-stats-details summary-log-details';
+
+    const toggle = document.createElement('summary');
+    toggle.textContent = isMultiSet ? `Show Set ${setNumber} Game Log` : 'Show Game Log';
+    details.appendChild(toggle);
+    details.appendChild(renderEventLog(game, nameA, nameB, setNumber));
+    section.appendChild(details);
+  }
+
+  return section;
+}
+
+function renderEventLog(game, nameA, nameB, setNumber = null) {
   const section = document.createElement('section');
   section.className = 'summary-section';
 
@@ -4006,7 +5555,11 @@ function renderEventLog(game, nameA, nameB) {
   title.textContent = 'Chronological Event Log';
   section.appendChild(title);
 
-  if (game.events.length === 0) {
+  const events = (game.events || [])
+    .map((event, eventIndex) => ({ event, eventIndex }))
+    .filter(({ event }) => setNumber === null || getEventSetNumber(game, event) === setNumber);
+
+  if (events.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
     empty.textContent = 'No events recorded yet.';
@@ -4017,7 +5570,8 @@ function renderEventLog(game, nameA, nameB) {
   const list = document.createElement('ol');
   list.className = 'event-log';
   const eventStartScores = getEventStartScores(game);
-  game.events.forEach((event) => {
+  const renderedPointActions = new Set();
+  events.forEach(({ event, eventIndex }) => {
     if (event.type === 'set_boundary' || event.action === 'set_end') {
       const item = document.createElement('li');
       item.className = 'event-log-item set-boundary-log-item';
@@ -4066,11 +5620,44 @@ function renderEventLog(game, nameA, nameB) {
     }
     item.appendChild(details);
 
-    const editButton = makeButton('Edit Point', 'event-edit-btn', () => {
-      beginPointEdit(game.id, event.pointNumber);
+    const inputActions = document.createElement('div');
+    inputActions.className = 'event-input-actions';
+    const editInputButton = makeButton('Edit Input', 'event-edit-btn', () => {
+      beginPointInputEdit(game.id, event.id, eventIndex);
     });
-    editButton.title = `Edit Point ${event.pointNumber} without changing later points`;
-    item.appendChild(editButton);
+    editInputButton.title = 'Change this specific logged input without replaying the point';
+    inputActions.appendChild(editInputButton);
+    item.appendChild(inputActions);
+
+    if (!renderedPointActions.has(event.pointNumber)) {
+      renderedPointActions.add(event.pointNumber);
+      const pointActions = document.createElement('div');
+      pointActions.className = 'event-point-actions';
+
+      const editButton = makeButton('Edit Point', 'event-edit-btn', () => {
+        beginPointEdit(game.id, event.pointNumber);
+      });
+      editButton.title = `Edit Point ${event.pointNumber} without changing later points`;
+      pointActions.appendChild(editButton);
+
+      const insertButton = makeButton('Insert Before', 'event-edit-btn', () => {
+        beginPointInsert(game.id, event.pointNumber);
+      });
+      insertButton.title = `Add a new point before Point ${event.pointNumber}`;
+      pointActions.appendChild(insertButton);
+
+      const deleteButton = makeButton('Delete Point', 'event-delete-btn', () => {
+        if (!confirm(`Delete Point ${event.pointNumber} and all of its logged actions?`)) return;
+        if (!deleteGamePoint(game.id, event.pointNumber)) {
+          alert('Could not delete that point — try again.');
+          return;
+        }
+        navigate('gameSummary', game.id);
+      });
+      deleteButton.title = `Delete Point ${event.pointNumber}`;
+      pointActions.appendChild(deleteButton);
+      item.appendChild(pointActions);
+    }
     list.appendChild(item);
   });
 

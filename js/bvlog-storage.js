@@ -426,15 +426,24 @@ function swapServingPlayer(gameId) {
 
 // Finishes the current set and starts the next one without completing the
 // match. The boundary event lets replay reset the rally state cleanly.
-function advanceToNextSet(gameId) {
+function advanceToNextSet(gameId, startingAction = null) {
   const game = getGameById(gameId);
   const currentSet = getCurrentSetNumber(game);
   if (!game || game.isComplete || currentSet >= 3) return false;
 
+  const nextSet = currentSet + 1;
+  const nextStartingAction = startingAction === 'receive' || startingAction === 'serve'
+    ? startingAction
+    : getSetStartingAction(game, nextSet);
+
   game.events = [...(game.events || []), setBoundaryEvent(game, currentSet)];
   game.completedSetNumbers = [...new Set([...(game.completedSetNumbers || []), currentSet])].sort((a, b) => a - b);
-  game.currentSetNumber = currentSet + 1;
+  game.currentSetNumber = nextSet;
   game.setNumber = 1;
+  game.setStartingActions = {
+    ...(game.setStartingActions || {}),
+    [nextSet]: nextStartingAction,
+  };
   game.status = 'paused';
   return saveGame(game);
 }
@@ -515,6 +524,33 @@ function updateGameDetails(gameId, details) {
   game.opponentName = opponentName;
   game.playedDate = playedDate;
   game.startingAction = startingAction;
+  game.setStartingActions = {
+    ...(game.setStartingActions || {}),
+    1: startingAction,
+  };
+  return saveGame(game);
+}
+
+// Removes one complete rally from a game log and closes the numbering gap so
+// the remaining chronological log stays easy to read. Non-rally events such
+// as set boundaries and server-swap corrections have no point number and are
+// preserved in place.
+function deleteGamePoint(gameId, pointNumber) {
+  const game = getGameById(gameId);
+  const target = Number(pointNumber);
+  if (!game || !Number.isInteger(target) || target < 1) return false;
+
+  const hasPoint = (game.events || []).some((event) => Number(event.pointNumber) === target);
+  if (!hasPoint) return false;
+
+  game.events = (game.events || [])
+    .filter((event) => Number(event.pointNumber) !== target)
+    .map((event) => {
+      const number = Number(event.pointNumber);
+      if (!Number.isInteger(number) || number <= target) return event;
+      return { ...event, pointNumber: number - 1 };
+    });
+
   return saveGame(game);
 }
 
@@ -533,17 +569,34 @@ function truncateGameEvents(gameId, eventIndex) {
   return saveGame(game);
 }
 
+// History cards are newest-first by the date the match was played. If two
+// games share that match date, the original log timestamp breaks the tie.
+// This keeps backfilled film logs in match order while still making same-day
+// entries appear in the order they were entered.
+function compareGamesByHistoryDate(a, b) {
+  const playedA = new Date(a?.playedDate || a?.date).getTime();
+  const playedB = new Date(b?.playedDate || b?.date).getTime();
+  const playedDifference = (Number.isFinite(playedB) ? playedB : 0)
+    - (Number.isFinite(playedA) ? playedA : 0);
+  if (playedDifference !== 0) return playedDifference;
+
+  const loggedA = new Date(a?.date).getTime();
+  const loggedB = new Date(b?.date).getTime();
+  return (Number.isFinite(loggedB) ? loggedB : 0)
+    - (Number.isFinite(loggedA) ? loggedA : 0);
+}
+
 // Filtered views for the history list ("finished matches") and a
-// resume screen ("pick back up where you left off"). Both sort
-// newest-first, since that's what you want on either screen.
+// resume screen ("pick back up where you left off"). Both use the same
+// newest-first match-date ordering.
 function getCompletedGames() {
   return loadGameHistory()
     .filter(g => g.isComplete)
-    .sort((a, b) => new Date(b.playedDate || b.date) - new Date(a.playedDate || a.date));
+    .sort(compareGamesByHistoryDate);
 }
 
 function getInProgressGames() {
   return loadGameHistory()
     .filter(g => !g.isComplete)
-    .sort((a, b) => new Date(b.playedDate || b.date) - new Date(a.playedDate || a.date));
+    .sort(compareGamesByHistoryDate);
 }

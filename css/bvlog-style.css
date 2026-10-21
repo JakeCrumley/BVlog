@@ -15,16 +15,21 @@ body {
 }
 
 /* SJSU gold interaction state for every enabled button. */
-button:hover:not(:disabled),
 button:active:not(:disabled),
 button:focus-visible:not(:disabled) {
   color: #fbbf24;
 }
 
-button:hover:not(:disabled) > *,
 button:active:not(:disabled) > *,
 button:focus-visible:not(:disabled) > * {
   color: #fbbf24;
+}
+
+@media (hover: hover) {
+  button:hover:not(:disabled),
+  button:hover:not(:disabled) > * {
+    color: #fbbf24;
+  }
 }
 
 /* Mobile browsers may retain focus after a tap. Keep the gold treatment for
@@ -33,6 +38,32 @@ button:focus-visible:not(:disabled) > * {
 button:focus:not(:focus-visible),
 button:focus:not(:focus-visible) > * {
   color: inherit;
+}
+
+/* Touch browsers can retain :hover and :focus-visible after a tap. Keep the
+   gold state limited to the press itself on those devices. */
+@media (hover: none) {
+  button:hover:not(:disabled),
+  button:hover:not(:disabled) > *,
+  button:focus-visible:not(:disabled),
+  button:focus-visible:not(:disabled) > *,
+  button.brand-header:hover .brand-title {
+    color: inherit;
+  }
+
+  button.stat-breakdown-sort-btn:hover:not(:disabled),
+  button.stat-breakdown-sort-btn:focus-visible:not(:disabled) {
+    color: inherit;
+  }
+
+  button:active:not(:disabled),
+  button:active:not(:disabled) > * {
+    color: #fbbf24;
+  }
+
+  button.stat-breakdown-sort-btn:active:not(:disabled) {
+    color: #fbbf24;
+  }
 }
 
 .screen {
@@ -1199,6 +1230,7 @@ h1 {
 
 .visualization-comparison-field {
   min-width: 0;
+  grid-column: span 2;
   border: 0;
   padding: 0;
 }
@@ -1210,10 +1242,10 @@ h1 {
 }
 
 .visualization-comparison-options {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 154px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  max-height: 180px;
   overflow-y: auto;
   padding: 2px 0;
 }
@@ -1222,10 +1254,29 @@ h1 {
   display: flex;
   align-items: center;
   gap: 7px;
-  min-height: 30px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #1e293b;
   color: #e2e8f0;
   cursor: pointer;
   font-size: 0.9rem;
+}
+
+.visualization-comparison-option:hover,
+.visualization-comparison-option:focus-within {
+  border-color: #2563eb;
+}
+
+.visualization-comparison-option:has(input:checked) {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.2);
+}
+
+.visualization-comparison-option input {
+  flex: 0 0 auto;
 }
 
 .history-filter-field .visualization-comparison-option input {
@@ -1882,6 +1933,33 @@ h1 {
     min-width: 0;
   }
 
+  .visualization-comparison-field {
+    grid-column: 1 / -1;
+  }
+
+  .visualization-comparison-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 190px;
+  }
+
+  .visualization-comparison-option {
+    min-height: 36px;
+    padding: 6px 7px;
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+  }
+
+  .stat-breakdown-selector {
+    min-width: 0;
+  }
+
+  .stat-breakdown-selector .player-stats-meta {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.3;
+  }
+
   .history-filter-field input[type="date"],
   .game-setup-form input[type="date"] {
     width: 100%;
@@ -2044,6 +2122,43 @@ h1 {
   .stats-table.stat-breakdown-table th:nth-child(3),
   .stats-table.stat-breakdown-table td:nth-child(3) {
     width: 17%;
+  }
+
+  .stat-breakdown-ranking {
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .stats-table.stat-breakdown-table {
+    width: max-content;
+    min-width: 100%;
+    table-layout: auto;
+  }
+
+  .stats-table.stat-breakdown-table th,
+  .stats-table.stat-breakdown-table td {
+    min-width: 78px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .stats-table.stat-breakdown-table th:first-child,
+  .stats-table.stat-breakdown-table td:first-child {
+    width: 48px;
+    min-width: 48px;
+  }
+
+  .stats-table.stat-breakdown-table th:nth-child(2),
+  .stats-table.stat-breakdown-table td:nth-child(2) {
+    width: 120px;
+    min-width: 120px;
+  }
+
+  .stats-table.stat-breakdown-table th:nth-child(3),
+  .stats-table.stat-breakdown-table td:nth-child(3) {
+    width: 96px;
+    min-width: 96px;
   }
 
   .statistical-breakdown-tabs {

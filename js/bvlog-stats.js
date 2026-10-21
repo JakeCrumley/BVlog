@@ -22,7 +22,7 @@ function safeDiv(numerator, denominator) {
 
 // Numeric value of a logged set, for the Average Set Quality formula.
 // 'option' is deliberately excluded because it is a setter attack rather
-// than a set-quality grade. Error is scored as 0.
+// than a set-quality grade. Both setting error types are scored as 0.
 function setValue(action) {
   if (action === 'error' || action === 'error_continue' || action === 0 || action === '0') return 0;
   if (action === 1 || action === '1') return 1;
@@ -174,6 +174,14 @@ function computeStats(events, who, pointTotals = null) {
   const wFirstBallEff = safeDiv(c.sideout.kill + 0.25 * c.sideout.attemptedContinue, c.sideout.attempts);
   const transitionEff  = safeDiv(c.transition.kill, c.transition.attempts);
   const wTransitionEff = safeDiv(c.transition.kill + 0.25 * c.transition.attemptedContinue, c.transition.attempts);
+  const attackingAttempts = c.sideout.attempts + c.transition.attempts;
+  const attackingKills = c.sideout.kill + c.transition.kill;
+  const attackingAttemptedContinue = c.sideout.attemptedContinue + c.transition.attemptedContinue;
+  const attackingEff = safeDiv(attackingKills, attackingAttempts);
+  const wAttackingEff = safeDiv(
+    attackingKills + 0.25 * attackingAttemptedContinue,
+    attackingAttempts,
+  );
   const passPct = safeDiv(c.passing.in_system, c.passing.attempts);
 
   // --- Points gained ---
@@ -231,6 +239,8 @@ function computeStats(events, who, pointTotals = null) {
     wFirstBallEff,
     transitionEff,
     wTransitionEff,
+    attackingEff,
+    wAttackingEff,
     passPct,
     servingPointsGained,
     sideoutPointsGained,
@@ -465,18 +475,24 @@ function breakdownAttackSourceRows(contexts, phases, sourceType) {
 }
 
 function breakdownOptionRows(contexts, phases) {
-  const row = { attempts: 0, kills: 0, errors: 0 };
+  const rows = new Map([
+    ['option', { label: 'Option attacks', attempts: 0, kills: 0, errors: 0 }],
+    ['non_option', { label: 'Non-option attacks', attempts: 0, kills: 0, errors: 0 }],
+  ]);
   for (const context of contexts) {
     context.events.forEach((event, index) => {
       if (!context.owned(event) || !breakdownIsAttack(event, phases)) return;
       const prior = breakdownPriorSet(context.events, index);
-      if (prior?.action !== 'option') return;
+      const row = rows.get(prior?.action === 'option' ? 'option' : 'non_option');
       if (breakdownAttempt(event)) row.attempts++;
       if (breakdownAttackAction(event) === 'kill') row.kills++;
       if (breakdownAttackAction(event) === 'error') row.errors++;
     });
   }
-  return [{ label: 'Option attacks', ...row, efficiency: safeDiv(row.kills, row.attempts) }];
+  return [...rows.values()].map((row) => ({
+    ...row,
+    efficiency: safeDiv(row.kills, row.attempts),
+  }));
 }
 
 function breakdownSetQualityRows(contexts, phases) {
@@ -573,6 +589,94 @@ function breakdownKillAfterSetRows(contexts) {
   }));
 }
 
+function breakdownActionLabel(action, phase) {
+  const labels = {
+    ace: 'Ace',
+    ko: 'KO',
+    in_system: 'In-system',
+    error: phase === PHASES.SETTING ? 'Error (Point End)' : 'Error',
+    error_continue: 'Error (Continue)',
+    aced: 'Aced',
+    oos: 'OOS',
+    return: phase === PHASES.PASSING ? 'Return' : 'Dig Return',
+    1: '1',
+    2: '2',
+    3: '3',
+    option: 'Option Attack',
+    kill: 'Kill',
+    blocked: 'Blocked',
+    continue: 'Continue',
+    block_kill: 'Block Kill',
+    block_touch: 'Block Touch',
+    block_return: 'Block Return',
+    block_error: 'Block Error',
+    dig: 'Dig',
+    dig_return: 'Dig Return',
+    dig_error: 'Dig Error',
+    receive: 'Freeball Receive',
+  };
+  return labels[action] || String(action);
+}
+
+function breakdownPointWinner(events) {
+  for (const event of events) {
+    const actionConfig = PHASE_CONFIG[event.phase]?.actions?.[event.action];
+    if (actionConfig?.endsPoint && actionConfig.winner) return actionConfig.winner;
+  }
+  return null;
+}
+
+function breakdownStatValueRows(contexts) {
+  const phaseOrder = [
+    PHASES.SERVE,
+    PHASES.PASSING,
+    PHASES.SETTING,
+    PHASES.SIDEOUT,
+    PHASES.TRANSITION,
+    PHASES.DEFENSE,
+  ];
+  const playerActions = new Map();
+
+  for (const phase of phaseOrder) {
+    const phaseConfig = PHASE_CONFIG[phase];
+    for (const action of Object.keys(phaseConfig.actions)) {
+      // These actions are logged without a player, and 0/legacy return
+      // actions are no longer available as player buttons.
+      if (action === 'opponent_kill' || action === 'opponent_error') continue;
+      if (phase === PHASES.SETTING && action === '0') continue;
+      if (phase === PHASES.DEFENSE && action === 'return') continue;
+      playerActions.set(`${phase}:${action}`, {
+        phase,
+        action,
+        label: `${phaseConfig.label} — ${breakdownActionLabel(action, phase)}`,
+        plays: 0,
+        teamPoints: 0,
+      });
+    }
+  }
+
+  for (const context of contexts) {
+    for (const events of context.pointGroups.values()) {
+      const pointWinner = breakdownPointWinner(events);
+      for (const event of events) {
+        if (!context.owned(event) || !['A', 'B'].includes(event.player)) continue;
+        const action = event.phase === PHASES.SIDEOUT || event.phase === PHASES.TRANSITION
+          ? breakdownAttackAction(event)
+          : event.action;
+        const row = playerActions.get(`${event.phase}:${action}`);
+        if (!row) continue;
+        row.plays++;
+        if (pointWinner === 'team') row.teamPoints++;
+      }
+    }
+  }
+
+  return [...playerActions.values()].map((row) => ({
+    ...row,
+    percentage: safeDiv(row.teamPoints, row.plays),
+  }));
+}
+
 function statisticalBreakdownColumns(kind) {
   const columns = {
     attack: [
@@ -591,6 +695,7 @@ function statisticalBreakdownColumns(kind) {
     serving: [['Aces', 'aces', 'number'], ['% of aces', 'percentage', 'percent']],
     servingResult: [['Serves', 'serves', 'number'], ['Opponent sideout kills', 'opponentKills', 'number'], ['Kill%', 'percentage', 'percent']],
     points: [['Points gained', 'value', 'number']],
+    statValue: [['Plays', 'plays', 'number'], ['Team points', 'teamPoints', 'number'], ['Point value%', 'percentage', 'percent']],
   };
   return (columns[kind] || []).map(([label, key, format]) => ({ label, key, format }));
 }
@@ -645,7 +750,7 @@ function computeStatisticalBreakdown(games, tab = 'serving', playerId = '', scop
     add('Opponent transition kills after continue', 'continue', breakdownContinueRows(contexts, attackPhases));
     if (tab === 'sideout') add('Sideout attack source', 'sourceAttack', breakdownAttackSourceRows(contexts, attackPhases, 'pass'));
     if (tab === 'transition') add('Transition attack source', 'sourceAttack', breakdownAttackSourceRows(contexts, attackPhases, 'defense'));
-    add('Option attack efficiency', 'option', breakdownOptionRows(contexts, attackPhases));
+    add('Attack efficiency by option selection', 'option', breakdownOptionRows(contexts, attackPhases));
     add('Efficiency by set quality', 'setQuality', breakdownSetQualityRows(contexts, attackPhases));
   } else if (tab === 'setting') {
     add('Set quality by pass source', 'setting', breakdownSettingRows(contexts, 'pass'));
@@ -665,6 +770,8 @@ function computeStatisticalBreakdown(games, tab = 'serving', playerId = '', scop
       { label: 'Total errors', value: stats.totalErrors },
       { label: 'Total points gained', value: stats.totalPointsGained },
     ]);
+  } else if (tab === 'statValue') {
+    add('Point value by player action', 'statValue', breakdownStatValueRows(contexts));
   }
 
   return {

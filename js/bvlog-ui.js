@@ -11,6 +11,7 @@
 
 const appEl = document.getElementById('app');
 let pointEditContext = null;
+const liveStatsScopeByGameId = new Map();
 
 function clearApp() {
   appEl.innerHTML = '';
@@ -56,7 +57,6 @@ function renderNavBar() {
   const brand = document.createElement('button');
   brand.type = 'button';
   brand.className = 'brand-header';
-  brand.dataset.clickSound = 'home';
   brand.title = 'Return to Home';
   brand.setAttribute('aria-label', 'Return to Home');
   brand.addEventListener('click', () => {
@@ -756,11 +756,12 @@ const KILL_QUALITY_LABELS = {
   [KILL_QUALITIES.OPPONENT_ERROR]: 'Opponent Error',
 };
 
-function markPointOutcomeButton(button, phase, action) {
-  const winner = PHASE_CONFIG[phase]?.actions[action]?.winner;
-  if (winner === 'team') button.dataset.clickSound = 'team-point';
-  if (winner === 'opponent') button.dataset.clickSound = 'opponent-point';
-  return button;
+function getKillQualityChoices(phase, action) {
+  return Object.values(KILL_QUALITIES).filter((quality) => !(
+    phase === PHASES.SERVE
+    && action === 'ace'
+    && quality === KILL_QUALITIES.OPPONENT_ERROR
+  ));
 }
 
 // CSS class per phase, for the color-coded buttons.
@@ -794,7 +795,7 @@ function otherPlayer(player) {
 }
 
 // The two-column layout is intentionally narrowed by rally context:
-// serving rotation, first defensive touch, setter exclusion, and direct
+// serving rotation, defensive-touch exclusion, setter exclusion, and direct
 // return/option attacks are all derived from the event log.
 function getVisiblePlayers(phase, rallyState) {
   if (phase === PHASES.SERVE && rallyState.servingPlayer) {
@@ -833,6 +834,8 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     appEl.appendChild(container);
     return;
   }
+
+  const liveStatsScope = normalizeStatsScope(liveStatsScopeByGameId.get(gameId) || 'match');
 
   const nameA = findPlayerById(game.playerAId)?.name ?? 'Unknown';
   const nameB = findPlayerById(game.playerBId)?.name ?? 'Unknown';
@@ -931,7 +934,6 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     opponentKillButton.type = 'button';
     opponentKillButton.className = `action-btn ${colorClass}`;
     opponentKillButton.textContent = labelForAction('opponent_kill', PHASES.DEFENSE);
-    markPointOutcomeButton(opponentKillButton, PHASES.DEFENSE, 'opponent_kill');
     opponentKillButton.addEventListener('click', () => {
       handleActionClick(gameId, PHASES.DEFENSE, null, 'opponent_kill');
     });
@@ -957,7 +959,6 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
       btn.type = 'button';
       btn.className = `action-btn ${colorClass}`;
       btn.textContent = labelForAction(action, phase);
-      markPointOutcomeButton(btn, phase, action);
       btn.addEventListener('click', () => handleActionClick(gameId, phase, null, action));
       row.appendChild(btn);
     }
@@ -971,7 +972,23 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
   liveStatsTitle.textContent = 'Stat Summary';
   container.appendChild(liveStatsTitle);
 
-  const liveStats = computeGameStats(game);
+  const liveStatsScopeControl = document.createElement('label');
+  liveStatsScopeControl.className = 'summary-scope-control live-stats-scope-control';
+  liveStatsScopeControl.textContent = 'View stats for';
+  const liveStatsScopeSelect = document.createElement('select');
+  liveStatsScopeSelect.appendChild(new Option('Total Match', 'match'));
+  for (const setNumber of getGameLogSetNumbers(game)) {
+    liveStatsScopeSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
+  }
+  liveStatsScopeSelect.value = liveStatsScope;
+  liveStatsScopeSelect.addEventListener('change', () => {
+    liveStatsScopeByGameId.set(gameId, normalizeStatsScope(liveStatsScopeSelect.value));
+    renderLiveTrackingScreen(gameId);
+  });
+  liveStatsScopeControl.appendChild(liveStatsScopeSelect);
+  container.appendChild(liveStatsScopeControl);
+
+  const liveStats = computeGameStats(game, liveStatsScope);
   container.appendChild(renderLiveStatsSummary(liveStats, nameA, nameB));
 
   const allStats = document.createElement('details');
@@ -1002,7 +1019,8 @@ function createScoreChangeBadge(side) {
   return badge;
 }
 
-function renderTrackingControls(gameId) {
+function renderTrackingControls(gameId, options = {}) {
+  const { onUndo = null } = options;
   const game = getWorkingGame(gameId);
   const editContext = getPointEditContext(gameId);
   const rallyState = game ? deriveRallyState(game) : null;
@@ -1013,10 +1031,16 @@ function renderTrackingControls(gameId) {
   undoBtn.type = 'button';
   undoBtn.className = 'undo-btn';
   undoBtn.textContent = 'Undo';
-  undoBtn.disabled = editContext
+  undoBtn.disabled = onUndo
+    ? false
+    : editContext
     ? editContext.replacementEvents.length === 0
     : !game || game.events.length === 0;
   undoBtn.addEventListener('click', () => {
+    if (onUndo) {
+      onUndo();
+      return;
+    }
     if (editContext) {
       editContext.replacementEvents.pop();
       renderLiveTrackingScreen(gameId);
@@ -1173,11 +1197,6 @@ function renderPlayerColumn(gameId, phase, player, playerName, actionKeys, color
     btn.type = 'button';
     btn.className = `action-btn ${colorClass}`;
     btn.textContent = labelForAction(action, phase);
-    // Ace opens the kill-quality follow-up, so the point sound is played
-    // when that final choice is made rather than twice in succession.
-    if (!(phase === PHASES.SERVE && action === 'ace')) {
-      markPointOutcomeButton(btn, phase, action);
-    }
     btn.addEventListener('click', () => handleActionClick(gameId, phase, player, action));
     col.appendChild(btn);
   }
@@ -1293,9 +1312,6 @@ function renderAttackSelection(gameId, game, phase, rallyState, colorClass) {
     btn.type = 'button';
     btn.className = `action-btn ${colorClass} attack-choice-btn`;
     btn.textContent = labelForAction(result, phase);
-    // A kill opens the kill-quality follow-up; direct opponent-scoring
-    // results can use their outcome sound immediately.
-    if (result !== 'kill') markPointOutcomeButton(btn, phase, result);
     btn.addEventListener('click', () => {
       selectedResult = result;
       for (const other of resultButtons) other.classList.remove('selected');
@@ -1327,12 +1343,11 @@ function renderKillQualityStep(gameId, pending) {
   const row = document.createElement('div');
   row.className = 'step-buttons';
 
-  for (const quality of Object.values(KILL_QUALITIES)) {
+  for (const quality of getKillQualityChoices(pending.phase, pending.action)) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'big-choice-btn step-btn';
     btn.textContent = KILL_QUALITY_LABELS[quality];
-    markPointOutcomeButton(btn, pending.phase, pending.action);
     btn.addEventListener('click', () => {
       finalizeEvent(gameId, { ...pending, killQuality: quality });
     });
@@ -1340,7 +1355,9 @@ function renderKillQualityStep(gameId, pending) {
   }
 
   container.appendChild(row);
-  container.appendChild(renderTrackingControls(gameId));
+  container.appendChild(renderTrackingControls(gameId, {
+    onUndo: () => renderLiveTrackingScreen(gameId),
+  }));
   appEl.appendChild(container);
 }
 
@@ -2479,11 +2496,18 @@ function renderHistoryScreen() {
     return field;
   };
 
-  const playerInput = document.createElement('input');
-  playerInput.id = 'history-player-filter';
-  playerInput.type = 'search';
-  playerInput.placeholder = 'e.g. Alex';
-  playerInput.setAttribute('aria-label', 'Filter by player name');
+  const playerSelect = document.createElement('select');
+  playerSelect.id = 'history-player-filter';
+  playerSelect.setAttribute('aria-label', 'Filter by player');
+  playerSelect.appendChild(new Option('All players', ''));
+  for (const player of loadRoster().sort((a, b) => String(a.name).localeCompare(
+    String(b.name),
+    undefined,
+    { sensitivity: 'base' },
+  ))) {
+    const label = player.archived ? `${player.name} (Archived)` : player.name;
+    playerSelect.appendChild(new Option(label, player.id));
+  }
 
   const opponentInput = document.createElement('input');
   opponentInput.id = 'history-opponent-filter';
@@ -2520,7 +2544,7 @@ function renderHistoryScreen() {
   resultSelect.appendChild(new Option('Wins', 'win'));
   resultSelect.appendChild(new Option('Losses', 'loss'));
 
-  filters.appendChild(makeFilterField('Player', playerInput));
+  filters.appendChild(makeFilterField('Player', playerSelect));
   filters.appendChild(makeFilterField('Opponent', opponentInput));
   filters.appendChild(makeFilterField('Played from', fromDateInput));
   filters.appendChild(makeFilterField('Played through', toDateInput));
@@ -2531,7 +2555,7 @@ function renderHistoryScreen() {
   const filterActions = document.createElement('div');
   filterActions.className = 'history-filter-actions';
   const clearFiltersButton = makeButton('Clear Filters', 'secondary-btn', () => {
-    playerInput.value = '';
+    playerSelect.value = '';
     opponentInput.value = '';
     fromDateInput.value = '';
     toDateInput.value = '';
@@ -2551,7 +2575,7 @@ function renderHistoryScreen() {
 
   const renderResults = () => {
     results.innerHTML = '';
-    const playerQuery = playerInput.value.trim().toLocaleLowerCase();
+    const selectedPlayerId = playerSelect.value;
     const opponentQuery = opponentInput.value.trim().toLocaleLowerCase();
     const startDate = fromDateInput.value;
     const endDate = toDateInput.value;
@@ -2560,10 +2584,9 @@ function renderHistoryScreen() {
     const selectedResult = resultSelect.value;
 
     const matches = (game) => {
-      const playerNames = [playerNameForGame(game, 'A'), playerNameForGame(game, 'B')];
       const playedDate = dateInputValueForGame(game);
 
-      if (playerQuery && !playerNames.some((name) => name.toLocaleLowerCase().includes(playerQuery))) return false;
+      if (selectedPlayerId && game.playerAId !== selectedPlayerId && game.playerBId !== selectedPlayerId) return false;
       if (opponentQuery && !String(game.opponentName || '').toLocaleLowerCase().includes(opponentQuery)) return false;
       if (startDate && playedDate < startDate) return false;
       if (endDate && playedDate > endDate) return false;
@@ -2606,7 +2629,7 @@ function renderHistoryScreen() {
     }
   };
 
-  for (const control of [playerInput, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [playerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
     control.disabled = allGames.length === 0;
     control.addEventListener('input', renderResults);
     control.addEventListener('change', renderResults);
@@ -2704,12 +2727,10 @@ function renderMatchCard(game, completed, scope = 'match') {
 
   const setLabel = document.createElement('span');
   setLabel.className = 'match-card-set';
-  const completedSets = getCompletedSetNumbers(game);
+  const playedSetCount = playedSetNumbers.length || 1;
   setLabel.textContent = selectedScope !== 'match'
     ? `Set ${selectedScope}`
-    : game.isComplete
-      ? `${completedSets.length || getCurrentSetNumber(game)} set${(completedSets.length || getCurrentSetNumber(game)) === 1 ? '' : 's'}`
-      : `Set ${getCurrentSetNumber(game)} of 3`;
+    : `${playedSetCount} set${playedSetCount === 1 ? '' : 's'}`;
 
   const footerRight = document.createElement('div');
   footerRight.className = 'match-card-footer-right';
@@ -3543,7 +3564,17 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
   const nameA = playerNameForGame(game, 'A');
   const nameB = playerNameForGame(game, 'B');
   const activeScope = normalizeStatsScope(scope);
-  const score = computeScore(game, activeScope);
+  const playedSetNumbers = getGameLogSetNumbers(game);
+  const computedScore = computeScore(game, activeScope);
+  const setRecord = playedSetNumbers.reduce((record, setNumber) => {
+    const setScore = computeScore(game, setNumber);
+    if (setScore.team > setScore.opponent) record.team += 1;
+    if (setScore.opponent > setScore.team) record.opponent += 1;
+    return record;
+  }, { team: 0, opponent: 0 });
+  const score = activeScope === 'match' && playedSetNumbers.length > 1
+    ? setRecord
+    : computedScore;
   const stats = computeGameStats(game, activeScope);
 
   const container = document.createElement('div');
@@ -3571,11 +3602,10 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
   scoreLine.textContent = `${score.team} – ${score.opponent}`;
   header.appendChild(scoreLine);
 
-  const completedSets = getCompletedSetNumbers(game);
-  if (completedSets.length > 0) {
+  if (activeScope === 'match' && playedSetNumbers.length > 1) {
     const setScores = document.createElement('p');
     setScores.className = 'summary-date';
-    setScores.textContent = completedSets
+    setScores.textContent = playedSetNumbers
       .map((setNumber) => `Set ${setNumber}: ${computeScore(game, setNumber).team}–${computeScore(game, setNumber).opponent}`)
       .join(' · ');
     header.appendChild(setScores);
@@ -3662,9 +3692,16 @@ function getPerformanceMetricGroups() {
       ],
     },
     {
+      label: 'Attacking',
+      rows: [
+        ['Attacking Eff%', 'attackingEff', formatPercent],
+        ['wAttacking Eff%', 'wAttackingEff', formatPercent],
+        ['Quality Kill%', 'qualityKillPct', formatPercent],
+      ],
+    },
+    {
       label: 'Attack Types (Sideout & Transition)',
       rows: [
-        ['Quality Kill%', 'qualityKillPct', formatPercent],
         ['Hard-Driven%', 'hardDrivenPct', formatPercent],
         ['Shot%', 'shotPct', formatPercent],
         ['Free Ball%', 'freeballPct', formatPercent],
@@ -3908,7 +3945,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
   container.className = 'screen stat-breakdown-screen';
 
   const definitions = getStatBreakdownDefinitions();
-  const defaultSelection = ['metric:totalPointsGained'];
+  const defaultSelection = ['metric:wFirstBallEff'];
   const activeSelectedIds = selectedStatIds === null
     ? defaultSelection
     : selectedStatIds.filter((id) => definitions.some((definition) => definition.id === id));
@@ -3993,11 +4030,12 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     container.appendChild(empty);
   } else {
     const rows = getPlayerStatsRows(completedGames, activeScope)
+      .filter((row) => (row.setCount || row.gameCount) > 0)
       .filter((row) => !findPlayerById(row.playerId)?.practicePlayer);
     if (rows.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'empty-state';
-      empty.textContent = 'No non-practice players are available for ranking.';
+      empty.textContent = 'No players with at least one completed set are available for ranking.';
       container.appendChild(empty);
     } else {
       container.appendChild(renderStatBreakdownTable(
@@ -4034,6 +4072,8 @@ const DEFAULT_STATISTICAL_BREAKDOWN_FILTERS = {
   status: 'completed',
   result: '',
   tab: 'serving',
+  statValueSortKey: '__metric',
+  statValueSortDirection: 'asc',
 };
 
 const STATISTICAL_BREAKDOWN_TABS = [
@@ -4043,6 +4083,7 @@ const STATISTICAL_BREAKDOWN_TABS = [
   ['allAttacking', 'All Attacking'],
   ['setting', 'Setting'],
   ['points', 'Points Gained'],
+  ['statValue', 'Stat Value'],
 ];
 
 const VISUALIZATION_TABS = [
@@ -4168,7 +4209,7 @@ function formatStatisticalBreakdownValue(value, format) {
   return formatStatNumber(value);
 }
 
-function renderStatisticalBreakdownTable(section) {
+function renderStatisticalBreakdownTable(section, options = {}) {
   const wrapper = document.createElement('section');
   wrapper.className = 'statistical-breakdown-section';
 
@@ -4179,11 +4220,64 @@ function renderStatisticalBreakdownTable(section) {
   const table = document.createElement('table');
   table.className = 'stats-table statistical-breakdown-table';
   const header = document.createElement('tr');
-  header.appendChild(renderTableCell('Metric', 'th'));
-  for (const column of section.columns) header.appendChild(renderTableCell(column.label, 'th'));
+  const sortable = options.sortable === true;
+  const activeSortKey = options.sortKey;
+  const activeSortDirection = options.sortDirection === 'asc' ? 'asc' : 'desc';
+  const metricHeader = document.createElement('th');
+  if (!sortable) {
+    metricHeader.textContent = 'Metric';
+  } else {
+    const metricSortButton = document.createElement('button');
+    metricSortButton.type = 'button';
+    metricSortButton.className = 'stat-breakdown-sort-btn';
+    metricSortButton.textContent = `Metric${activeSortKey === '__metric' ? ' ↑' : ''}`;
+    metricSortButton.title = 'Restore phase order';
+    metricSortButton.setAttribute('aria-label', 'Restore phase order');
+    metricSortButton.setAttribute('aria-sort', activeSortKey === '__metric' ? 'ascending' : 'none');
+    metricSortButton.addEventListener('click', () => options.onSort?.('__metric', 'asc'));
+    metricHeader.appendChild(metricSortButton);
+  }
+  header.appendChild(metricHeader);
+  for (const column of section.columns) {
+    const headerCell = document.createElement('th');
+    if (!sortable) {
+      headerCell.textContent = column.label;
+    } else {
+      const sortButton = document.createElement('button');
+      sortButton.type = 'button';
+      sortButton.className = 'stat-breakdown-sort-btn';
+      const isActiveSort = activeSortKey === column.key;
+      const arrow = isActiveSort ? (activeSortDirection === 'asc' ? ' ↑' : ' ↓') : '';
+      sortButton.textContent = `${column.label}${arrow}`;
+      sortButton.title = `Sort by ${column.label}`;
+      sortButton.setAttribute('aria-label', `Sort by ${column.label}`);
+      sortButton.setAttribute('aria-sort', isActiveSort
+        ? activeSortDirection === 'asc' ? 'ascending' : 'descending'
+        : 'none');
+      sortButton.addEventListener('click', () => {
+        const nextDirection = isActiveSort && activeSortDirection === 'desc' ? 'asc' : 'desc';
+        options.onSort?.(column.key, nextDirection);
+      });
+      headerCell.appendChild(sortButton);
+    }
+    header.appendChild(headerCell);
+  }
   table.appendChild(header);
 
-  for (const row of section.rows) {
+  const rows = sortable && activeSortKey !== '__metric' ? [...section.rows].sort((first, second) => {
+    const firstValue = first[activeSortKey];
+    const secondValue = second[activeSortKey];
+    const firstHasValue = typeof firstValue === 'number' && Number.isFinite(firstValue);
+    const secondHasValue = typeof secondValue === 'number' && Number.isFinite(secondValue);
+    if (firstHasValue !== secondHasValue) return firstHasValue ? -1 : 1;
+    if (!firstHasValue) return String(first.label).localeCompare(String(second.label));
+    if (firstValue !== secondValue) {
+      return activeSortDirection === 'asc' ? firstValue - secondValue : secondValue - firstValue;
+    }
+    return String(first.label).localeCompare(String(second.label));
+  }) : section.rows;
+
+  for (const row of rows) {
     const tableRow = document.createElement('tr');
     tableRow.appendChild(renderTableCell(row.label, 'th'));
     for (const column of section.columns) {
@@ -4250,7 +4344,23 @@ function renderStatisticalBreakdownsScreen(state = {}) {
       activeState.playerId,
       normalizeStatsScope(activeState.setNumber),
     );
-    for (const section of report.sections) container.appendChild(renderStatisticalBreakdownTable(section));
+    const statValueSortKey = activeState.statValueSortKey || '__metric';
+    const statValueSortDirection = activeState.statValueSortDirection === 'asc' ? 'asc' : 'desc';
+    for (const section of report.sections) {
+      const tableOptions = activeState.tab === 'statValue'
+        ? {
+          sortable: true,
+          sortKey: statValueSortKey,
+          sortDirection: statValueSortDirection,
+          onSort: (nextSortKey, nextSortDirection) => renderStatisticalBreakdownsScreen({
+            ...activeState,
+            statValueSortKey: nextSortKey,
+            statValueSortDirection: nextSortDirection,
+          }),
+        }
+        : undefined;
+      container.appendChild(renderStatisticalBreakdownTable(section, tableOptions));
+    }
   }
 
   appEl.appendChild(container);
@@ -5197,9 +5307,15 @@ function renderVisualizationsScreen(state = {}) {
     tabBar.appendChild(button);
   }
   container.appendChild(tabBar);
-  container.appendChild(renderVisualizationFilterPanel(activeState, (nextState) => {
+  const rerenderVisualizationPreservingViewport = (nextState) => {
+    const scrollLeft = window.scrollX;
+    const scrollTop = window.scrollY;
     renderVisualizationsScreen(nextState);
-  }));
+    requestAnimationFrame(() => {
+      window.scrollTo({ left: scrollLeft, top: scrollTop, behavior: 'auto' });
+    });
+  };
+  container.appendChild(renderVisualizationFilterPanel(activeState, rerenderVisualizationPreservingViewport));
 
   if (activeState.tab === 'statTrends') {
     container.appendChild(renderStatBreakdownSelector(
@@ -5322,6 +5438,7 @@ function renderLiveStatsSummary(stats, nameA, nameB) {
         ['wKO%', 'wKoPct', formatPercent],
         ['wFirst Ball Eff%', 'wFirstBallEff', formatPercent],
         ['wTransition Eff%', 'wTransitionEff', formatPercent],
+        ['wAttacking Eff%', 'wAttackingEff', formatPercent],
         ['Pass%', 'passPct', formatPercent],
         ['Average Set Quality', 'avgSetQuality', formatStatNumber],
         ['Quality Kill%', 'qualityKillPct', formatPercent],

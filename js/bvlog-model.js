@@ -43,8 +43,8 @@ const PHASES = {
 const DYNAMIC_ATTACK = 'dynamic_attack';
 
 // A direct attack created by a defensive Dig Return is tracked separately
-// from ordinary attacks. It is only an efficiency attempt when it produces
-// a kill, even if the attack type selected later is hard-driven or a shot.
+// from ordinary attacks, but every resulting attack outcome is still an
+// attacking attempt, whether it is a kill, error, continue, or blocked.
 const ATTACK_SOURCES = {
   DIG_RETURN: 'dig_return',
 };
@@ -167,12 +167,12 @@ function resolveAttackPhase(startedReceiving, hasAttacked) {
 }
 
 // Whether a Sideout/Transition outcome counts as an "attack attempt"
-// for the efficiency stats. A Dig Return only counts when it is a kill.
+// for the efficiency stats. Every Dig Return attack counts as an attempt.
 // Otherwise, a freeball counts only when it ends in a kill or error;
 // hard-driven and shot attacks count regardless of outcome.
 function isAttackAttempt(action, attackType, attackSource = null) {
   if (attackSource === ATTACK_SOURCES.DIG_RETURN) {
-    return action === 'kill';
+    return action === 'kill' || action === 'error' || action === 'blocked' || action === 'continue';
   }
   if (attackType === ATTACK_TYPES.FREEBALL) {
     return action === 'kill' || action === 'error';
@@ -372,7 +372,10 @@ function deriveRallyState(game) {
     }
 
     if (e.phase === PHASES.DEFENSE && (e.player === 'A' || e.player === 'B')) {
-      if (firstDefender === null) firstDefender = e.player;
+      // The player who made the latest defensive touch cannot set the next
+      // ball. This also handles a dig that follows a block return within the
+      // same defensive exchange.
+      firstDefender = e.player;
       if (e.action === 'dig_return' || e.action === 'return') {
         directReturner = e.player;
         attackSource = ATTACK_SOURCES.DIG_RETURN;

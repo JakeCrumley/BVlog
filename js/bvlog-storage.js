@@ -168,10 +168,9 @@ function findPlayerById(playerId) {
 // ----------------------------
 // Games are saved as a flat list, newest-last on disk — sort by
 // `date` wherever you display a history list. Saving is an upsert
-// (match by id): call saveGame() right after creating a game AND
-// again after every point if you want crash-safe live tracking, not
-// just once at the end — it's cheap, and it means a closed tab or
-// dead battery mid-game doesn't lose the log.
+// (match by id): save after every point for local crash safety, but
+// only sync live event changes to the cloud when the game is paused
+// or completed. New games and completed-game edits sync immediately.
 
 // A deletion tombstone is kept separately from the visible game list. This
 // is important for cloud sync: an empty local list cannot tell another device
@@ -281,13 +280,13 @@ function loadGameHistory() {
   }
 }
 
-function saveGameHistory(games) {
+function saveGameHistory(games, notifyCloud = true) {
   try {
     const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
     const visibleGames = (Array.isArray(games) ? games : [])
       .filter((game) => game?.id && !deletedIds.has(game.id));
     localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
-    if (typeof scheduleCloudSync === 'function') scheduleCloudSync();
+    if (notifyCloud && typeof scheduleCloudSync === 'function') scheduleCloudSync();
     return true;
   } catch (err) {
     console.error('saveGameHistory failed:', err);
@@ -295,14 +294,35 @@ function saveGameHistory(games) {
   }
 }
 
-// Upserts a single game into history (replaces it by id if it's
-// already there, otherwise appends) and persists. Returns true on
-// success, false if the save failed.
-function saveGame(game) {
+function getGameCloudMetadata(game) {
+  if (!game) return null;
+  return {
+    id: game.id || null,
+    playerAId: game.playerAId || null,
+    playerBId: game.playerBId || null,
+    opponentName: game.opponentName || '',
+    playedDate: game.playedDate || '',
+    startingAction: game.startingAction || null,
+    setStartingActions: game.setStartingActions || {},
+    setNumber: Number(game.setNumber) || 1,
+    currentSetNumber: Number(game.currentSetNumber) || 1,
+    completedSetNumbers: Array.isArray(game.completedSetNumbers) ? game.completedSetNumbers : [],
+    status: game.status || null,
+    isComplete: Boolean(game.isComplete),
+  };
+}
+
+// Upserts a single game into history (replaces it by id, otherwise appends)
+// and persists locally. Live event-only saves stay local; pass { sync: true }
+// for an explicit pause/completion boundary.
+function saveGame(game, options = {}) {
   if (!game?.id || isGameDeleted(game.id)) return false;
   game.updatedAt = new Date().toISOString();
   const games = loadGameHistory();
   const index = games.findIndex(g => g.id === game.id);
+  const previousGame = index === -1 ? null : games[index];
+  const metadataChanged = JSON.stringify(getGameCloudMetadata(previousGame))
+    !== JSON.stringify(getGameCloudMetadata(game));
 
   if (index === -1) {
     games.push(game);
@@ -310,7 +330,17 @@ function saveGame(game) {
     games[index] = game;
   }
 
-  return saveGameHistory(games);
+  if (!saveGameHistory(games, false)) return false;
+
+  const shouldSync = Boolean(
+    options.sync
+    || index === -1
+    || previousGame?.isComplete
+    || game.isComplete
+    || metadataChanged
+  );
+  if (shouldSync && typeof scheduleCloudSync === 'function') scheduleCloudSync();
+  return true;
 }
 
 // Merges imported players and games into local storage. Existing games with
@@ -367,7 +397,7 @@ function pauseGame(gameId) {
   if (!game || game.isComplete) return false;
 
   game.status = 'paused';
-  return saveGame(game);
+  return saveGame(game, { sync: true });
 }
 
 function resumeGame(gameId) {
@@ -445,7 +475,7 @@ function advanceToNextSet(gameId, startingAction = null) {
     [nextSet]: nextStartingAction,
   };
   game.status = 'paused';
-  return saveGame(game);
+  return saveGame(game, { sync: true });
 }
 
 // Finishes the current set and the match. Set 3 always ends the match here;
@@ -462,7 +492,7 @@ function completeMatchAtSetEnd(gameId) {
   game.setNumber = 1;
   game.isComplete = true;
   game.status = 'completed';
-  return saveGame(game);
+  return saveGame(game, { sync: true });
 }
 
 // Removes a game from history. Returns true if a game was actually
@@ -487,7 +517,7 @@ function markGameComplete(gameId) {
 
   game.isComplete = true;
   game.status = 'completed';
-  return saveGame(game);
+  return saveGame(game, { sync: true });
 }
 
 // Reopens a completed game for editing without changing its event log.

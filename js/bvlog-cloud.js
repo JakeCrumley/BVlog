@@ -170,7 +170,9 @@ async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
 // functions above. Keeping the small foundation intact makes older saved
 // settings compatible while all new writes use merge semantics.
 
-const CLOUD_SYNC_INTERVAL_MS = 15000;
+// Realtime handles immediate remote updates. The interval is only a small
+// version check fallback; it must not repeatedly download the full workspace.
+const CLOUD_SYNC_INTERVAL_MS = 60000;
 let autoCloudClient = null;
 let autoCloudClientKey = '';
 let autoCloudAuthSubscription = null;
@@ -180,6 +182,9 @@ let autoCloudSyncInterval = null;
 let autoCloudSyncInFlight = null;
 let autoCloudSyncStartedKey = '';
 let autoCloudSyncSuppressed = false;
+let autoCloudWorkspaceSnapshot = null;
+let autoCloudWorkspaceUpdatedAt = '';
+let autoCloudMembershipKey = '';
 
 function cloudPlayerNameKey(name) {
   return String(name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
@@ -393,6 +398,22 @@ async function fetchCloudWorkspace() {
   return data;
 }
 
+// Background checks only need the version marker. The roster and games can be
+// much larger than this response, so avoid transferring them unless the
+// workspace actually changed.
+async function fetchCloudWorkspaceVersion() {
+  const client = getCloudClient();
+  const workspaceId = loadCloudConfig().workspaceId;
+  if (!client || !workspaceId) throw new Error('Save the Supabase settings and workspace id first.');
+  const { data, error } = await client
+    .from('bvlog_workspaces')
+    .select('id, updated_at')
+    .eq('id', workspaceId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function loadCloudWorkspace() {
   return fetchCloudWorkspace();
 }
@@ -408,10 +429,14 @@ async function ensureCloudWorkspaceMembership() {
   if (userError) throw userError;
   if (!userData.user) return false;
 
+  const membershipKey = `${workspaceId}|${userData.user.id}`;
+  if (autoCloudMembershipKey === membershipKey) return true;
+
   const { error } = await client
     .from('bvlog_workspace_members')
     .insert({ workspace_id: workspaceId, user_id: userData.user.id, role: 'coach' });
   if (error && error.code !== '23505') throw error;
+  autoCloudMembershipKey = membershipKey;
   return true;
 }
 
@@ -481,11 +506,22 @@ async function syncCloudWorkspace({ silent = false } = {}) {
     let remoteChanged = false;
     let converged = false;
 
-    // The updated_at predicate makes the write optimistic: if another device
-    // writes between our read and write, no rows are updated and we retry the
-    // merge against the newer remote snapshot instead of overwriting it.
+    // Reuse the last full remote snapshot whenever its lightweight version
+    // check is unchanged. The updated_at predicate still makes writes
+    // optimistic: if another device writes between the check and update, no
+    // rows are updated and the next attempt fetches the newer full snapshot.
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const remote = await fetchCloudWorkspace();
+      let remote = null;
+      if (attempt === 0 && autoCloudWorkspaceSnapshot) {
+        const remoteVersion = await fetchCloudWorkspaceVersion();
+        if (remoteVersion.updated_at === autoCloudWorkspaceUpdatedAt) {
+          remote = autoCloudWorkspaceSnapshot;
+        }
+      }
+      if (!remote) remote = await fetchCloudWorkspace();
+      autoCloudWorkspaceSnapshot = remote;
+      autoCloudWorkspaceUpdatedAt = remote.updated_at || '';
+
       const localRoster = loadRoster();
       const localGames = loadGameHistory();
       const localDeletedGames = loadDeletedGameTombstones();
@@ -528,9 +564,22 @@ async function syncCloudWorkspace({ silent = false } = {}) {
       if (error) throw error;
       if (data) {
         remoteChanged = true;
+        autoCloudWorkspaceSnapshot = {
+          ...remote,
+          roster: merged.roster,
+          games: merged.games,
+          deleted_game_ids: merged.deletedGames,
+          updated_at: data.updated_at,
+        };
+        autoCloudWorkspaceUpdatedAt = data.updated_at || '';
         converged = true;
         break;
       }
+
+      // A concurrent writer won the optimistic update. Discard the cached
+      // snapshot so the next attempt downloads the current workspace once.
+      autoCloudWorkspaceSnapshot = null;
+      autoCloudWorkspaceUpdatedAt = '';
     }
 
     if (!converged) {
@@ -552,6 +601,15 @@ async function syncCloudWorkspace({ silent = false } = {}) {
   return autoCloudSyncInFlight;
 }
 
+async function checkCloudWorkspaceForChanges() {
+  if (!isCloudConfigured() || autoCloudSyncInFlight) return { skipped: true };
+  const remoteVersion = await fetchCloudWorkspaceVersion();
+  if (remoteVersion.updated_at === autoCloudWorkspaceUpdatedAt) {
+    return { unchanged: true };
+  }
+  return syncCloudWorkspace({ silent: true });
+}
+
 function scheduleCloudSync() {
   if (autoCloudSyncSuppressed || !isCloudConfigured()) return;
   window.clearTimeout(autoCloudSyncTimer);
@@ -570,6 +628,9 @@ function stopCloudSync() {
   }
   autoCloudRealtimeChannel = null;
   autoCloudSyncStartedKey = '';
+  autoCloudWorkspaceSnapshot = null;
+  autoCloudWorkspaceUpdatedAt = '';
+  autoCloudMembershipKey = '';
 }
 
 async function startCloudSync() {
@@ -592,7 +653,7 @@ async function startCloudSync() {
       }, () => syncCloudWorkspace({ silent: true }).catch(() => {}))
       .subscribe();
     autoCloudSyncInterval = window.setInterval(() => {
-      syncCloudWorkspace({ silent: true }).catch(() => {});
+      checkCloudWorkspaceForChanges().catch(() => {});
     }, CLOUD_SYNC_INTERVAL_MS);
   }
   return syncCloudWorkspace({ silent: true });

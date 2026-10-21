@@ -295,7 +295,7 @@ function renderCloudSyncScreen() {
 
   const help = document.createElement('p');
   help.className = 'empty-state';
-  help.textContent = 'Once signed in, roster changes and paused or completed games merge automatically. Realtime updates and a periodic refresh bring changes from other connected devices into this app. Use Sync Now if you want to force an immediate merge.';
+  help.textContent = 'Once signed in, roster changes and paused or completed games merge automatically. Realtime updates and lightweight periodic checks bring changes from other connected devices into this app. Use Sync Now if you want to force an immediate merge.';
   container.appendChild(help);
 
   appEl.appendChild(container);

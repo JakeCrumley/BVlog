@@ -276,17 +276,17 @@ function renderCloudSyncScreen() {
   workspaceActions.appendChild(makeButton('Join Existing Workspace', 'secondary-btn', async () => {
     try {
       await joinCloudWorkspace();
-      status.textContent = 'Joined the workspace. Automatic merge sync is active on this device.';
+      status.textContent = 'Joined the workspace. This device will sync when opened or when you check for updates.';
     } catch (error) {
       status.textContent = `Could not join workspace: ${error.message}`;
     }
   }));
-  workspaceActions.appendChild(makeButton('Sync Now (Merge)', 'secondary-btn', async () => {
+  workspaceActions.appendChild(makeButton('Check for New Updates', 'secondary-btn', async () => {
     try {
       const result = await syncCloudWorkspace();
       status.textContent = result?.skipped
         ? 'Cloud sync is not configured yet.'
-        : 'Local and cloud data were merged successfully.';
+        : 'New cloud updates were downloaded and merged.';
     } catch (error) {
       status.textContent = `Sync failed: ${error.message}`;
     }
@@ -295,7 +295,7 @@ function renderCloudSyncScreen() {
 
   const help = document.createElement('p');
   help.className = 'empty-state';
-  help.textContent = 'Once signed in, roster changes and paused or completed games merge automatically. Realtime updates and lightweight periodic checks bring changes from other connected devices into this app. Use Sync Now if you want to force an immediate merge.';
+  help.textContent = 'This device checks for cloud updates when the app opens or when you press Check for New Updates. Local paused, completed, and edited games can still upload automatically.';
   container.appendChild(help);
 
   appEl.appendChild(container);
@@ -3697,6 +3697,7 @@ function getPerformanceMetricGroups() {
         ['Attacking Eff%', 'attackingEff', formatPercent],
         ['wAttacking Eff%', 'wAttackingEff', formatPercent],
         ['Quality Kill%', 'qualityKillPct', formatPercent],
+        ['No-Contact Kill%', 'noContactKillPct', formatPercent],
       ],
     },
     {
@@ -4385,8 +4386,9 @@ const DEFAULT_VISUALIZATION_STATE = {
   metricId: '',
   statIds: ['metric:totalPointsGained'],
   chartMode: 'daily',
-  xStatId: 'metric:totalPointsGained',
-  yStatId: 'metric:totalKillsAces',
+  // wSideoutEff is the existing weighted first-ball/sideout efficiency metric.
+  xStatId: 'metric:wFirstBallEff',
+  yStatId: 'metric:ptPct',
 };
 
 function getVisualizationMetricDefinitions(tab) {
@@ -5442,6 +5444,7 @@ function renderLiveStatsSummary(stats, nameA, nameB) {
         ['Pass%', 'passPct', formatPercent],
         ['Average Set Quality', 'avgSetQuality', formatStatNumber],
         ['Quality Kill%', 'qualityKillPct', formatPercent],
+        ['No-Contact Kill%', 'noContactKillPct', formatPercent],
         ['Total Kills/Aces', 'totalKillsAces', formatStatNumber],
         ['Total Errors', 'totalErrors', formatStatNumber],
         ['Total Pts Gained', 'totalPointsGained', formatStatNumber],

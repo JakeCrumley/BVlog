@@ -222,6 +222,10 @@ function computeStats(events, who, pointTotals = null) {
     c.killQuality.attackNoContact + c.killQuality.attackSemiContact,
     c.killQuality.attackTotalKills
   );
+  const noContactKillPct = safeDiv(
+    c.killQuality.attackNoContact,
+    c.killQuality.attackTotalKills
+  );
   const qualityAcePct = safeDiv(
     c.killQuality.aceNoContact + c.killQuality.aceSemiContact,
     c.killQuality.aceTotal
@@ -252,6 +256,7 @@ function computeStats(events, who, pointTotals = null) {
     ptPct,
     avgSetQuality,
     qualityKillPct,
+    noContactKillPct,
     qualityAcePct,
     hardDrivenPct,
     shotPct,

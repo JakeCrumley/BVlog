@@ -134,45 +134,16 @@ async function createCloudWorkspace(name) {
   return workspace;
 }
 
-async function loadCloudWorkspace() {
-  const client = getCloudClient();
-  const workspaceId = loadCloudConfig().workspaceId;
-  if (!client || !workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
-
-  const { data, error } = await client
-    .from('bvlog_workspaces')
-    .select('id, name, roster, games, deleted_game_ids, updated_at')
-    .eq('id', workspaceId)
-    .single();
-  if (error) throw error;
-  return data;
-}
-
-async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
-  const client = getCloudClient();
-  const config = loadCloudConfig();
-  if (!client || !config.workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
-
-  const { data, error } = await client
-    .from('bvlog_workspaces')
-    .update({ roster, games, deleted_game_ids: deletedGameTombstones, updated_at: new Date().toISOString() })
-    .eq('id', config.workspaceId)
-    .select('id, updated_at')
-    .single();
-  if (error) throw error;
-  return data;
-}
-
 // ============================================================
 // Automatic merge sync
 // ============================================================
-// The functions below intentionally supersede the initial explicit-transfer
-// functions above. Keeping the small foundation intact makes older saved
-// settings compatible while all new writes use merge semantics.
+// The functions below use merge semantics. Games are stored as individual
+// workspace rows after the database migration, with a legacy JSON fallback
+// while older workspaces are being upgraded.
 
-// Realtime handles immediate remote updates. The interval is only a small
-// version check fallback; it must not repeatedly download the full workspace.
-const CLOUD_SYNC_INTERVAL_MS = 60000;
+// Cloud downloads are intentionally pull-based. The app syncs at startup and
+// when the user explicitly requests an update; it does not keep a Realtime
+// subscription or poll while sitting open.
 let autoCloudClient = null;
 let autoCloudClientKey = '';
 let autoCloudAuthSubscription = null;
@@ -184,7 +155,10 @@ let autoCloudSyncStartedKey = '';
 let autoCloudSyncSuppressed = false;
 let autoCloudWorkspaceSnapshot = null;
 let autoCloudWorkspaceUpdatedAt = '';
+let autoCloudGameSyncCursor = '';
+let autoCloudDeletionSyncCursor = '';
 let autoCloudMembershipKey = '';
+let autoCloudGameRowsAvailable = null;
 
 function cloudPlayerNameKey(name) {
   return String(name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
@@ -269,7 +243,7 @@ function mergeCloudDeletions(localTombstones = [], remoteTombstones = []) {
       byId.set(id, { id, deletedAt });
     }
   }
-  return [...byId.values()].sort((a, b) => cloudTime(a.deletedAt) - cloudTime(b.deletedAt));
+  return [...byId.values()].sort((a, b) => cloudTime(a.deletedAt) - cloudTime(b.deletedAt) || String(a.id).localeCompare(String(b.id)));
 }
 
 function mergeCloudGamesWithDeletions(localGames = [], remoteGames = [], idRemap = new Map(), deletedTombstones = []) {
@@ -284,7 +258,7 @@ function mergeCloudGamesWithDeletions(localGames = [], remoteGames = [], idRemap
       byId.set(game.id, game);
     }
   }
-  return [...byId.values()].sort((a, b) => cloudTime(a.date) - cloudTime(b.date));
+  return [...byId.values()].sort((a, b) => cloudTime(a.date) - cloudTime(b.date) || String(a.id).localeCompare(String(b.id)));
 }
 
 function cloudStable(value) {
@@ -385,7 +359,56 @@ async function signOutOfCloud() {
   if (error) throw error;
 }
 
-async function fetchCloudWorkspace() {
+function isMissingCloudGameRowsError(error) {
+  const message = String(error?.message || '');
+  return ['42P01', 'PGRST205', 'PGRST204'].includes(error?.code)
+    || /bvlog_workspace_game|relation .* does not exist/i.test(message);
+}
+
+function normalizeCloudGameRows(rows = []) {
+  return rows
+    .map((row) => {
+      if (!row?.game || typeof row.game !== 'object' || Array.isArray(row.game)) return null;
+      return {
+        ...row.game,
+        id: row.game.id || row.game_id,
+        updatedAt: row.game.updatedAt || row.updated_at,
+      };
+    })
+    .filter((game) => game?.id && Array.isArray(game.events))
+    .sort((a, b) => cloudTime(a.date) - cloudTime(b.date) || String(a.id).localeCompare(String(b.id)));
+}
+
+function normalizeCloudDeletionRows(rows = []) {
+  return rows
+    .map((row) => ({
+      id: row?.game_id,
+      deletedAt: row?.deleted_at,
+      updatedAt: row?.updated_at || row?.deleted_at,
+    }))
+    .filter((entry) => entry.id)
+    .sort((a, b) => cloudTime(a.updatedAt) - cloudTime(b.updatedAt) || String(a.id).localeCompare(String(b.id)));
+}
+
+function latestCloudTimestamp(values = []) {
+  return values
+    .map((value) => value || '')
+    .filter(Boolean)
+    .sort((a, b) => cloudTime(b) - cloudTime(a))[0] || '';
+}
+
+function advanceCloudSyncCursors(gameRows = [], deletionRows = []) {
+  const latestGameTimestamp = latestCloudTimestamp(gameRows.map((row) => row?.updated_at));
+  const latestDeletionTimestamp = latestCloudTimestamp(deletionRows.map((row) => row?.updated_at || row?.deleted_at));
+  if (cloudTime(latestGameTimestamp) > cloudTime(autoCloudGameSyncCursor)) {
+    autoCloudGameSyncCursor = latestGameTimestamp;
+  }
+  if (cloudTime(latestDeletionTimestamp) > cloudTime(autoCloudDeletionSyncCursor)) {
+    autoCloudDeletionSyncCursor = latestDeletionTimestamp;
+  }
+}
+
+async function fetchLegacyCloudWorkspace() {
   const client = getCloudClient();
   const workspaceId = loadCloudConfig().workspaceId;
   if (!client || !workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
@@ -396,6 +419,121 @@ async function fetchCloudWorkspace() {
     .single();
   if (error) throw error;
   return data;
+}
+
+async function fetchCloudWorkspace() {
+  const client = getCloudClient();
+  const workspaceId = loadCloudConfig().workspaceId;
+  if (!client || !workspaceId) throw new Error('Save the Supabase settings and a workspace id first.');
+
+  const { data: workspace, error: workspaceError } = await client
+    .from('bvlog_workspaces')
+    .select('id, name, roster, updated_at')
+    .eq('id', workspaceId)
+    .single();
+  if (workspaceError) throw workspaceError;
+
+  if (autoCloudGameRowsAvailable !== false) {
+    const [{ data: gameRows, error: gameError }, { data: deletionRows, error: deletionError }] = await Promise.all([
+      client
+        .from('bvlog_workspace_games')
+        .select('game_id, game, updated_at')
+        .eq('workspace_id', workspaceId),
+      client
+        .from('bvlog_workspace_game_deletions')
+        .select('game_id, deleted_at, updated_at')
+        .eq('workspace_id', workspaceId),
+    ]);
+
+    if (!gameError && !deletionError) {
+      autoCloudGameRowsAvailable = true;
+      advanceCloudSyncCursors(gameRows || [], deletionRows || []);
+      return {
+        ...workspace,
+        games: normalizeCloudGameRows(gameRows || []),
+        deleted_game_ids: normalizeCloudDeletionRows(deletionRows || []),
+      };
+    }
+
+    if (!isMissingCloudGameRowsError(gameError) && !isMissingCloudGameRowsError(deletionError)) {
+      throw gameError || deletionError;
+    }
+    autoCloudGameRowsAvailable = false;
+  }
+
+  // Compatibility fallback until the new migration has been run.
+  autoCloudGameSyncCursor = '';
+  autoCloudDeletionSyncCursor = '';
+  return fetchLegacyCloudWorkspace();
+}
+
+// Once an initial snapshot exists, only retrieve rows changed after the last
+// downloaded row timestamp. The >= comparison intentionally re-reads rows at
+// the cursor boundary so equal timestamps cannot cause a change to be missed.
+async function fetchCloudWorkspaceChangesSinceLastSync() {
+  const client = getCloudClient();
+  const workspaceId = loadCloudConfig().workspaceId;
+  if (!client || !workspaceId) throw new Error('Save the Supabase settings and workspace id first.');
+  if (autoCloudGameRowsAvailable !== true || !autoCloudWorkspaceSnapshot) return null;
+
+  const gameQuery = client
+    .from('bvlog_workspace_games')
+    .select('game_id, game, updated_at')
+    .eq('workspace_id', workspaceId);
+  if (autoCloudGameSyncCursor) gameQuery.gte('updated_at', autoCloudGameSyncCursor);
+
+  const deletionQuery = client
+    .from('bvlog_workspace_game_deletions')
+    .select('game_id, deleted_at, updated_at')
+    .eq('workspace_id', workspaceId);
+  if (autoCloudDeletionSyncCursor) deletionQuery.gte('updated_at', autoCloudDeletionSyncCursor);
+
+  const [
+    { data: workspace, error: workspaceError },
+    { data: gameRows, error: gameError },
+    { data: deletionRows, error: deletionError },
+  ] = await Promise.all([
+    client
+      .from('bvlog_workspaces')
+      .select('id, name, roster, updated_at')
+      .eq('id', workspaceId)
+      .single(),
+    gameQuery,
+    deletionQuery,
+  ]);
+  if (workspaceError) throw workspaceError;
+  if (gameError || deletionError) {
+    if (isMissingCloudGameRowsError(gameError) || isMissingCloudGameRowsError(deletionError)) {
+      autoCloudGameRowsAvailable = false;
+      return null;
+    }
+    throw gameError || deletionError;
+  }
+
+  advanceCloudSyncCursors(gameRows || [], deletionRows || []);
+  return {
+    ...workspace,
+    games: normalizeCloudGameRows(gameRows || []),
+    deleted_game_ids: normalizeCloudDeletionRows(deletionRows || []),
+  };
+}
+
+function mergeCloudWorkspaceDelta(snapshot, delta) {
+  const deletedGames = mergeCloudDeletions(
+    snapshot.deleted_game_ids || [],
+    delta.deleted_game_ids || [],
+  );
+  return {
+    ...snapshot,
+    ...delta,
+    games: mergeCloudGamesWithDeletions(
+      snapshot.games || [],
+      delta.games || [],
+      new Map(),
+      deletedGames,
+    ),
+    deleted_game_ids: deletedGames,
+  };
 }
 
 // Background checks only need the version marker. The roster and games can be
@@ -457,7 +595,7 @@ async function joinCloudWorkspace() {
   return fetchCloudWorkspace();
 }
 
-async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
+async function saveLegacyCloudWorkspace(roster, games, deletedGameTombstones = []) {
   const client = getCloudClient();
   const config = loadCloudConfig();
   if (!client || !config.workspaceId) throw new Error('Save Supabase settings and a workspace id first.');
@@ -493,6 +631,100 @@ async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
   return { ...data, changed: true, merged };
 }
 
+async function writeCloudGameRows(remote, merged) {
+  const client = getCloudClient();
+  const workspaceId = loadCloudConfig().workspaceId;
+  if (!client || !workspaceId) throw new Error('Save the Supabase settings and a workspace id first.');
+
+  const remoteGames = new Map((remote.games || []).map((game) => [game.id, game]));
+  const deletedIds = new Set((merged.deletedGames || []).map((entry) => entry.id));
+  const gameIdsToRemove = [...remoteGames.keys()].filter((gameId) => deletedIds.has(gameId));
+  if (gameIdsToRemove.length > 0) {
+    const { error } = await client
+      .from('bvlog_workspace_games')
+      .delete()
+      .eq('workspace_id', workspaceId)
+      .in('game_id', gameIdsToRemove);
+    if (error) throw error;
+  }
+
+  const gamesToUpsert = (merged.games || [])
+    .filter((game) => {
+      const remoteGame = remoteGames.get(game.id);
+      return !remoteGame || cloudStable(remoteGame) !== cloudStable(game);
+    })
+    .map((game) => ({
+      workspace_id: workspaceId,
+      game_id: game.id,
+      game,
+      // The row timestamp describes this cloud mutation. It must be fresh
+      // even when an offline game retains its original local updatedAt.
+      updated_at: new Date().toISOString(),
+    }));
+  if (gamesToUpsert.length > 0) {
+    const { error } = await client
+      .from('bvlog_workspace_games')
+      .upsert(gamesToUpsert, { onConflict: 'workspace_id,game_id' });
+    if (error) throw error;
+  }
+
+  const remoteDeletions = new Map((remote.deleted_game_ids || []).map((entry) => [entry.id, entry]));
+  const deletionsToUpsert = (merged.deletedGames || [])
+    .filter((entry) => {
+      const remoteEntry = remoteDeletions.get(entry.id);
+      return !remoteEntry || cloudTime(entry.deletedAt) > cloudTime(remoteEntry.deletedAt);
+    })
+    .map((entry) => ({
+      workspace_id: workspaceId,
+      game_id: entry.id,
+      deleted_at: entry.deletedAt || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }));
+  if (deletionsToUpsert.length > 0) {
+    const { error } = await client
+      .from('bvlog_workspace_game_deletions')
+      .upsert(deletionsToUpsert, { onConflict: 'workspace_id,game_id' });
+    if (error) throw error;
+  }
+
+  if (cloudStable(merged.roster) !== cloudStable(remote.roster)) {
+    const { error } = await client
+      .from('bvlog_workspaces')
+      .update({ roster: merged.roster, updated_at: new Date().toISOString() })
+      .eq('id', workspaceId);
+    if (error) throw error;
+  }
+
+  const version = await fetchCloudWorkspaceVersion();
+  return {
+    id: workspaceId,
+    updated_at: version.updated_at,
+    gameCursor: latestCloudTimestamp(gamesToUpsert.map((game) => game.updated_at)),
+    deletionCursor: latestCloudTimestamp(deletionsToUpsert.map((entry) => entry.updated_at)),
+  };
+}
+
+async function saveCloudWorkspace(roster, games, deletedGameTombstones = []) {
+  const remote = await fetchCloudWorkspace();
+  const merged = mergeCloudData(
+    roster,
+    games,
+    remote.roster || [],
+    remote.games || [],
+    deletedGameTombstones,
+    remote.deleted_game_ids || [],
+  );
+  const changed = cloudStable(merged.roster) !== cloudStable(remote.roster)
+    || cloudStable(merged.games) !== cloudStable(remote.games)
+    || cloudStable(merged.deletedGames) !== cloudStable(remote.deleted_game_ids);
+  if (!changed) return { id: remote.id, updated_at: remote.updated_at, changed: false, merged };
+  if (autoCloudGameRowsAvailable) {
+    const result = await writeCloudGameRows(remote, merged);
+    return { ...result, changed: true, merged };
+  }
+  return saveLegacyCloudWorkspace(roster, games, deletedGameTombstones);
+}
+
 async function syncCloudWorkspace({ silent = false } = {}) {
   if (!isCloudConfigured()) return { skipped: true };
   if (autoCloudSyncInFlight) return autoCloudSyncInFlight;
@@ -507,15 +739,20 @@ async function syncCloudWorkspace({ silent = false } = {}) {
     let converged = false;
 
     // Reuse the last full remote snapshot whenever its lightweight version
-    // check is unchanged. The updated_at predicate still makes writes
-    // optimistic: if another device writes between the check and update, no
-    // rows are updated and the next attempt fetches the newer full snapshot.
+    // check is unchanged. With normalized game rows, writes only send games
+    // that differ from this snapshot.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       let remote = null;
       if (attempt === 0 && autoCloudWorkspaceSnapshot) {
         const remoteVersion = await fetchCloudWorkspaceVersion();
         if (remoteVersion.updated_at === autoCloudWorkspaceUpdatedAt) {
           remote = autoCloudWorkspaceSnapshot;
+        } else if (autoCloudGameRowsAvailable === true) {
+          // The workspace version changed, but the cached snapshot already
+          // contains every older game. Download only the changed rows and
+          // merge them into that snapshot.
+          const delta = await fetchCloudWorkspaceChangesSinceLastSync();
+          if (delta) remote = mergeCloudWorkspaceDelta(autoCloudWorkspaceSnapshot, delta);
         }
       }
       if (!remote) remote = await fetchCloudWorkspace();
@@ -545,6 +782,23 @@ async function syncCloudWorkspace({ silent = false } = {}) {
         || cloudStable(merged.games) !== cloudStable(remote.games)
         || cloudStable(merged.deletedGames) !== cloudStable(remote.deleted_game_ids);
       if (!thisRemoteChanged) {
+        converged = true;
+        break;
+      }
+
+      if (autoCloudGameRowsAvailable) {
+        const data = await writeCloudGameRows(remote, merged);
+        remoteChanged = true;
+        autoCloudWorkspaceSnapshot = {
+          ...remote,
+          roster: merged.roster,
+          games: merged.games,
+          deleted_game_ids: merged.deletedGames,
+          updated_at: data.updated_at,
+        };
+        if (data.gameCursor) autoCloudGameSyncCursor = data.gameCursor;
+        if (data.deletionCursor) autoCloudDeletionSyncCursor = data.deletionCursor;
+        autoCloudWorkspaceUpdatedAt = data.updated_at || '';
         converged = true;
         break;
       }
@@ -610,6 +864,136 @@ async function checkCloudWorkspaceForChanges() {
   return syncCloudWorkspace({ silent: true });
 }
 
+async function refreshCloudSnapshotVersion() {
+  if (!autoCloudWorkspaceSnapshot) return;
+  const version = await fetchCloudWorkspaceVersion();
+  autoCloudWorkspaceUpdatedAt = version.updated_at || '';
+  autoCloudWorkspaceSnapshot.updated_at = autoCloudWorkspaceUpdatedAt;
+}
+
+async function handleCloudGameRealtime(payload) {
+  if (payload.eventType === 'DELETE' || !payload.new) return;
+  if (!autoCloudWorkspaceSnapshot || autoCloudGameRowsAvailable !== true) {
+    await syncCloudWorkspace({ silent: true });
+    return;
+  }
+
+  const [game] = normalizeCloudGameRows([payload.new]);
+  if (!game) return;
+  advanceCloudSyncCursors([payload.new], []);
+  const remoteDeletedIds = new Set((autoCloudWorkspaceSnapshot.deleted_game_ids || []).map((entry) => entry.id));
+  const remoteGames = autoCloudWorkspaceSnapshot.games || [];
+  autoCloudWorkspaceSnapshot.games = [
+    ...remoteGames.filter((entry) => entry.id !== game.id),
+    ...(remoteDeletedIds.has(game.id) ? [] : [game]),
+  ].sort((a, b) => cloudTime(a.date) - cloudTime(b.date) || String(a.id).localeCompare(String(b.id)));
+  await refreshCloudSnapshotVersion();
+
+  const localGames = loadGameHistory();
+  const remoteDeletions = mergeCloudDeletions(
+    loadDeletedGameTombstones(),
+    autoCloudWorkspaceSnapshot.deleted_game_ids || [],
+  );
+  const mergedGames = mergeCloudGamesWithDeletions(
+    localGames,
+    [game],
+    new Map(),
+    remoteDeletions,
+  );
+  const localChanged = cloudStable(mergedGames) !== cloudStable(localGames);
+  if (localChanged) {
+    setCloudApplySuppressed(true);
+    try {
+      saveGameHistory(mergedGames);
+    } finally {
+      setCloudApplySuppressed(false);
+    }
+    window.dispatchEvent(new CustomEvent('bvlog-cloud-updated', {
+      detail: { localChanged: true, remoteChanged: false, silent: true },
+    }));
+  }
+
+  const localGame = loadGameHistory().find((entry) => entry.id === game.id);
+  if (localGame && cloudTime(localGame.updatedAt || localGame.date) > cloudTime(game.updatedAt || game.date)) {
+    scheduleCloudSync();
+  }
+}
+
+async function handleCloudGameDeletionRealtime(payload) {
+  if (payload.eventType === 'DELETE' || !payload.new) return;
+  if (!autoCloudWorkspaceSnapshot || autoCloudGameRowsAvailable !== true) {
+    await syncCloudWorkspace({ silent: true });
+    return;
+  }
+
+  const [deletion] = normalizeCloudDeletionRows([payload.new]);
+  if (!deletion) return;
+  advanceCloudSyncCursors([], [payload.new]);
+  autoCloudWorkspaceSnapshot.deleted_game_ids = mergeCloudDeletions(
+    autoCloudWorkspaceSnapshot.deleted_game_ids || [],
+    [deletion],
+  );
+  const deletedIds = new Set(autoCloudWorkspaceSnapshot.deleted_game_ids.map((entry) => entry.id));
+  autoCloudWorkspaceSnapshot.games = (autoCloudWorkspaceSnapshot.games || [])
+    .filter((game) => !deletedIds.has(game.id));
+  await refreshCloudSnapshotVersion();
+
+  const localRoster = loadRoster();
+  const localGames = loadGameHistory();
+  const localDeletedGames = loadDeletedGameTombstones();
+  const merged = mergeCloudData(
+    localRoster,
+    localGames,
+    autoCloudWorkspaceSnapshot.roster || [],
+    autoCloudWorkspaceSnapshot.games || [],
+    localDeletedGames,
+    autoCloudWorkspaceSnapshot.deleted_game_ids || [],
+  );
+  const localChanged = cloudStable(merged.games) !== cloudStable(localGames)
+    || cloudStable(merged.deletedGames) !== cloudStable(localDeletedGames);
+  if (localChanged) {
+    applyCloudMergedData(merged);
+    window.dispatchEvent(new CustomEvent('bvlog-cloud-updated', {
+      detail: { localChanged: true, remoteChanged: false, silent: true },
+    }));
+  }
+}
+
+async function handleCloudWorkspaceRealtime(payload) {
+  if (!payload.new || !autoCloudWorkspaceSnapshot) {
+    await syncCloudWorkspace({ silent: true });
+    return;
+  }
+
+  const remoteRoster = Array.isArray(payload.new.roster) ? payload.new.roster : null;
+  if (!remoteRoster) {
+    await syncCloudWorkspace({ silent: true });
+    return;
+  }
+
+  const rosterChanged = cloudStable(remoteRoster) !== cloudStable(autoCloudWorkspaceSnapshot.roster || []);
+  autoCloudWorkspaceSnapshot.roster = remoteRoster;
+  await refreshCloudSnapshotVersion();
+  if (!rosterChanged) return;
+
+  const localRoster = loadRoster();
+  const mergedRoster = mergeCloudRosters(localRoster, remoteRoster).roster;
+  const localChanged = cloudStable(mergedRoster) !== cloudStable(localRoster);
+  if (localChanged) {
+    setCloudApplySuppressed(true);
+    try {
+      saveRoster(mergedRoster);
+    } finally {
+      setCloudApplySuppressed(false);
+    }
+    window.dispatchEvent(new CustomEvent('bvlog-cloud-updated', {
+      detail: { localChanged: true, remoteChanged: false, silent: true },
+    }));
+  } else {
+    scheduleCloudSync();
+  }
+}
+
 function scheduleCloudSync() {
   if (autoCloudSyncSuppressed || !isCloudConfigured()) return;
   window.clearTimeout(autoCloudSyncTimer);
@@ -630,7 +1014,10 @@ function stopCloudSync() {
   autoCloudSyncStartedKey = '';
   autoCloudWorkspaceSnapshot = null;
   autoCloudWorkspaceUpdatedAt = '';
+  autoCloudGameSyncCursor = '';
+  autoCloudDeletionSyncCursor = '';
   autoCloudMembershipKey = '';
+  autoCloudGameRowsAvailable = null;
 }
 
 async function startCloudSync() {
@@ -643,18 +1030,12 @@ async function startCloudSync() {
   if (autoCloudSyncStartedKey !== syncKey) {
     stopCloudSync();
     autoCloudSyncStartedKey = syncKey;
-    autoCloudRealtimeChannel = client
-      .channel(`bvlog-workspace-${config.workspaceId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'bvlog_workspaces',
-        filter: `id=eq.${config.workspaceId}`,
-      }, () => syncCloudWorkspace({ silent: true }).catch(() => {}))
-      .subscribe();
-    autoCloudSyncInterval = window.setInterval(() => {
-      checkCloudWorkspaceForChanges().catch(() => {});
-    }, CLOUD_SYNC_INTERVAL_MS);
+    // Do not subscribe to Supabase Realtime here. Realtime sends every game
+    // JSON payload to every connected device, which is unnecessarily costly
+    // for this app. Startup sync and the manual update button use the same
+    // incremental row download path instead.
+    autoCloudRealtimeChannel = null;
+    autoCloudSyncInterval = null;
   }
   return syncCloudWorkspace({ silent: true });
 }
@@ -663,15 +1044,3 @@ function restartCloudSync() {
   stopCloudSync();
   if (isCloudConfigured()) startCloudSync().catch(() => {});
 }
-
-window.addEventListener('online', () => startCloudSync().catch(() => {}));
-// Same-origin tabs share localStorage but do not receive each other's custom
-// events. Use the browser storage event to prompt a merge in sibling tabs so
-// a delete or game update is noticed without requiring a manual reload.
-window.addEventListener('storage', (event) => {
-  if (![STORAGE_KEYS.ROSTER, STORAGE_KEYS.GAMES, STORAGE_KEYS.DELETED_GAMES].includes(event.key)) return;
-  startCloudSync().catch(() => {});
-});
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') startCloudSync().catch(() => {});
-});

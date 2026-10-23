@@ -6,6 +6,7 @@
 // and workspace id are saved on this device.
 
 const CLOUD_CONFIG_STORAGE_KEY = 'bvlog_cloud_config';
+const LEGACY_EMBEDDED_CLOUD_URL = 'https://zstrnxbjeoqdyvvojnou.supabase.co';
 
 function getEmbeddedCloudDefaults() {
   const defaults = window.BVLOG_CLOUD_DEFAULTS || {};
@@ -20,9 +21,19 @@ function loadCloudConfig() {
   try {
     const raw = localStorage.getItem(CLOUD_CONFIG_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object'
-      ? { ...getEmbeddedCloudDefaults(), ...parsed }
-      : getEmbeddedCloudDefaults();
+    const embedded = getEmbeddedCloudDefaults();
+    if (parsed && typeof parsed === 'object') {
+      // Existing installations may have the previous built-in Supabase
+      // project saved locally. Move those installations to the new shared
+      // project without overwriting users who intentionally entered custom
+      // cloud settings.
+      if (parsed.url === LEGACY_EMBEDDED_CLOUD_URL) {
+        localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify(embedded));
+        return embedded;
+      }
+      return { ...embedded, ...parsed };
+    }
+    return embedded;
   } catch (error) {
     console.error('Could not load cloud configuration:', error);
     return getEmbeddedCloudDefaults();

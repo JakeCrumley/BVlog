@@ -1573,6 +1573,22 @@ function gameExportBaseName(game) {
   return `bvlog-${datePart}-${safeFilePart(game.opponentName)}`;
 }
 
+function exportFullBackup() {
+  const payload = {
+    formatVersion: 2,
+    type: 'bvlog-full-backup',
+    exportedAt: new Date().toISOString(),
+    players: loadRoster(),
+    games: loadGameHistory(),
+  };
+  const datePart = new Date().toISOString().slice(0, 10);
+  downloadTextFile(
+    `bvlog-full-backup-${datePart}.json`,
+    JSON.stringify(payload, null, 2),
+    'application/json',
+  );
+}
+
 function exportGameJson(gameId) {
   const game = getGameById(gameId);
   if (!game) return;
@@ -2478,6 +2494,7 @@ function renderHistoryScreen() {
     '.csv,text/csv',
     async (file) => importCsvBackupText(await file.text()),
   ));
+  importControls.appendChild(makeButton('Export Full Backup', 'secondary-btn', exportFullBackup));
   container.appendChild(importControls);
 
   const inProgress = getInProgressGames();

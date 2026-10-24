@@ -257,6 +257,22 @@ function loadGameHistory() {
         game.completedSetNumbers = game.isComplete ? [legacySetNumber] : [];
         changed = true;
       }
+      if (!Array.isArray(game.checkedPointNumbers)) {
+        game.checkedPointNumbers = [];
+        changed = true;
+      } else {
+        const normalizedCheckedPoints = [...new Set(game.checkedPointNumbers
+          .map(Number)
+          .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))];
+        if (JSON.stringify(normalizedCheckedPoints) !== JSON.stringify(game.checkedPointNumbers)) {
+          game.checkedPointNumbers = normalizedCheckedPoints;
+          changed = true;
+        }
+      }
+      if (typeof game.notes !== 'string') {
+        game.notes = game.notes == null ? '' : String(game.notes);
+        changed = true;
+      }
       if (Array.isArray(game.events)) {
         for (const event of game.events) {
           if (!event || event.type === 'set_boundary' || event.setNumber) continue;
@@ -341,6 +357,58 @@ function saveGame(game, options = {}) {
   );
   if (shouldSync && typeof scheduleCloudSync === 'function') scheduleCloudSync();
   return true;
+}
+
+// Check-point markers are attached to the globally numbered rally rather than
+// to a screen or a temporary live-tracking state. That keeps the marker with
+// the point when the game is reopened, exported, synced, or edited.
+function isPointChecked(game, pointNumber) {
+  const target = Number(pointNumber);
+  return Number.isInteger(target)
+    && target > 0
+    && Array.isArray(game?.checkedPointNumbers)
+    && game.checkedPointNumbers.includes(target);
+}
+
+function setPointChecked(game, pointNumber, checked) {
+  if (!game) return false;
+  const target = Number(pointNumber);
+  if (!Number.isInteger(target) || target < 1) return false;
+
+  const current = Array.isArray(game.checkedPointNumbers)
+    ? game.checkedPointNumbers.map(Number).filter((value) => Number.isInteger(value) && value > 0)
+    : [];
+  const next = new Set(current);
+  if (checked) next.add(target);
+  else next.delete(target);
+  game.checkedPointNumbers = [...next].sort((a, b) => a - b);
+  return true;
+}
+
+function shiftCheckedPointNumbers(game, fromPointNumber, delta) {
+  if (!game || !Array.isArray(game.checkedPointNumbers)) return;
+  const from = Number(fromPointNumber);
+  const amount = Number(delta);
+  if (!Number.isInteger(from) || !Number.isInteger(amount) || amount === 0) return;
+
+  game.checkedPointNumbers = [...new Set(game.checkedPointNumbers
+    .map(Number)
+    .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0)
+    .map((pointNumber) => pointNumber >= from ? pointNumber + amount : pointNumber)
+    .filter((pointNumber) => pointNumber > 0))].sort((a, b) => a - b);
+}
+
+function removeCheckedPointNumber(game, pointNumber) {
+  if (!game || !Array.isArray(game.checkedPointNumbers)) return;
+  const target = Number(pointNumber);
+  if (!Number.isInteger(target)) return;
+
+  game.checkedPointNumbers = [...new Set(game.checkedPointNumbers
+    .map(Number)
+    .filter((checkedPoint) => Number.isInteger(checkedPoint) && checkedPoint > 0)
+    .filter((checkedPoint) => checkedPoint !== target)
+    .map((checkedPoint) => checkedPoint > target ? checkedPoint - 1 : checkedPoint))]
+    .sort((a, b) => a - b);
 }
 
 // Merges imported players and games into local storage. Existing games with
@@ -561,6 +629,16 @@ function updateGameDetails(gameId, details) {
   return saveGame(game);
 }
 
+// Saves coach notes independently from the recorded point sequence. Notes
+// travel with the game so they remain available in summaries and cloud sync.
+function updateGameNotes(gameId, notes) {
+  const game = getGameById(gameId);
+  if (!game) return false;
+
+  game.notes = String(notes ?? '');
+  return saveGame(game, { sync: true });
+}
+
 // Removes one complete rally from a game log and closes the numbering gap so
 // the remaining chronological log stays easy to read. Non-rally events such
 // as set boundaries and server-swap corrections have no point number and are
@@ -580,6 +658,7 @@ function deleteGamePoint(gameId, pointNumber) {
       if (!Number.isInteger(number) || number <= target) return event;
       return { ...event, pointNumber: number - 1 };
     });
+  removeCheckedPointNumber(game, target);
 
   return saveGame(game);
 }

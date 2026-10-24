@@ -667,6 +667,25 @@ h1 {
   margin-top: 24px;
 }
 
+.check-point-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.check-point-control input {
+  width: 18px;
+  height: 18px;
+  accent-color: #e5a823;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
 .undo-btn,
 .pause-btn,
 .swap-server-btn,
@@ -1351,6 +1370,23 @@ h1 {
   margin: 0 0 12px;
 }
 
+.game-notes-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.game-notes-form textarea {
+  width: 100%;
+  min-height: 110px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.game-notes-actions {
+  margin-top: 0;
+}
+
 .match-card-list {
   display: flex;
   flex-direction: column;
@@ -1673,6 +1709,19 @@ h1 {
 .event-start-score {
   color: #cbd5e1;
   font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.event-check-point-tag {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 2px;
+  padding: 2px 5px;
+  border: 1px solid rgba(229, 168, 35, 0.65);
+  border-radius: 4px;
+  color: #f7d477;
+  font-size: 0.68rem;
+  line-height: 1.1;
   white-space: nowrap;
 }
 

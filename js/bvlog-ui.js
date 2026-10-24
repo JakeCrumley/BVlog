@@ -967,6 +967,29 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
 
   container.appendChild(renderTrackingControls(gameId));
 
+  if (!editContext) {
+    const pointNumber = getCurrentPointNumber(game);
+    const checkPointControl = document.createElement('label');
+    checkPointControl.className = 'check-point-control';
+    const checkPointCheckbox = document.createElement('input');
+    checkPointCheckbox.type = 'checkbox';
+    checkPointCheckbox.checked = isPointChecked(game, pointNumber);
+    checkPointCheckbox.setAttribute('aria-label', `Check Point ${pointNumber} to return to later`);
+    checkPointCheckbox.addEventListener('change', () => {
+      const currentGame = getGameById(gameId);
+      if (!currentGame) return;
+      setPointChecked(currentGame, pointNumber, checkPointCheckbox.checked);
+      if (!saveGame(currentGame)) {
+        alert('Could not save the check-point marker — try again.');
+        return;
+      }
+      renderLiveTrackingScreen(gameId);
+    });
+    checkPointControl.appendChild(checkPointCheckbox);
+    checkPointControl.appendChild(document.createTextNode(' Check Point'));
+    container.appendChild(checkPointControl);
+  }
+
   const liveStatsTitle = document.createElement('h2');
   liveStatsTitle.className = 'live-stats-title';
   liveStatsTitle.textContent = 'Stat Summary';
@@ -1410,6 +1433,9 @@ function finalizeEvent(gameId, pending) {
           ...laterEvents,
         ],
       };
+      if (editContext.mode === 'insert') {
+        shiftCheckedPointNumbers(updatedGame, editContext.pointNumber, 1);
+      }
       if (!saveGame(updatedGame)) {
         editContext.replacementEvents.pop();
         alert('Could not save the edited point — try again.');
@@ -1808,6 +1834,10 @@ function normalizeImportedGame(game) {
     setStartingActions,
     isComplete: Boolean(game.isComplete),
     status: game.isComplete ? 'completed' : 'paused',
+    notes: game.notes == null ? '' : String(game.notes),
+    checkedPointNumbers: [...new Set((Array.isArray(game.checkedPointNumbers) ? game.checkedPointNumbers : [])
+      .map(Number)
+      .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))].sort((a, b) => a - b),
     events: game.events.map((event) => ({
       ...event,
       id: event.id || crypto.randomUUID(),
@@ -3669,9 +3699,43 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
 
   container.appendChild(renderMetricTable(stats, nameA, nameB));
   container.appendChild(renderRawStatsTable(stats, nameA, nameB));
+  container.appendChild(renderGameNotes(game, activeScope));
   container.appendChild(renderSummaryGameLogs(game, nameA, nameB, activeScope));
 
   appEl.appendChild(container);
+}
+
+function renderGameNotes(game, scope = 'match') {
+  const section = document.createElement('section');
+  section.className = 'summary-section game-notes-section';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Add Note';
+  section.appendChild(title);
+
+  const form = document.createElement('form');
+  form.className = 'game-notes-form';
+
+  const textarea = document.createElement('textarea');
+  textarea.rows = 5;
+  textarea.value = typeof game.notes === 'string' ? game.notes : '';
+  textarea.placeholder = 'Type notes about this game...';
+  textarea.setAttribute('aria-label', 'Game notes');
+  form.appendChild(textarea);
+
+  const actions = document.createElement('div');
+  actions.className = 'summary-actions game-notes-actions';
+  actions.appendChild(makeButton('Save Note', 'primary-btn', () => {
+    if (!updateGameNotes(game.id, textarea.value)) {
+      alert('Could not save the game note — try again.');
+      return;
+    }
+    navigate('gameSummary', { gameId: game.id, scope });
+  }));
+  form.appendChild(actions);
+  section.appendChild(form);
+
+  return section;
 }
 
 function getPerformanceMetricGroups() {
@@ -4107,6 +4171,7 @@ const STATISTICAL_BREAKDOWN_TABS = [
 const VISUALIZATION_TABS = [
   ['statTrends', 'Time Progression'],
   ['statCharts', 'Stat Charts'],
+  ['winLoss', 'Win/Loss'],
 ];
 
 function renderStatisticalBreakdownFilterPanel(filters, onChange) {
@@ -4409,7 +4474,7 @@ const DEFAULT_VISUALIZATION_STATE = {
 };
 
 function getVisualizationMetricDefinitions(tab) {
-  if (tab === 'statTrends' || tab === 'statCharts') {
+  if (tab === 'statTrends' || tab === 'statCharts' || tab === 'winLoss') {
     return getStatBreakdownDefinitions().map((definition) => ({
       id: definition.id,
       group: definition.group,
@@ -4439,7 +4504,7 @@ function defaultVisualizationMetric(definitions) {
 function renderVisualizationFilterPanel(state, onChange) {
   const panel = document.createElement('div');
   panel.className = 'history-filter-panel visualization-filter-panel';
-  const isStatChartsTab = state.tab === 'statCharts';
+  const isAxisChartTab = state.tab === 'statCharts' || state.tab === 'winLoss';
 
   const makeField = (labelText, control) => {
     const field = document.createElement('label');
@@ -4455,7 +4520,7 @@ function renderVisualizationFilterPanel(state, onChange) {
   viewSelect.appendChild(new Option('One player', 'player'));
   viewSelect.appendChild(new Option('Compare players', 'compare'));
   viewSelect.value = state.viewMode;
-  if (!isStatChartsTab) panel.appendChild(makeField('View', viewSelect));
+  if (!isAxisChartTab) panel.appendChild(makeField('View', viewSelect));
 
   const playerSelect = document.createElement('select');
   playerSelect.appendChild(new Option('Select player', ''));
@@ -4514,7 +4579,7 @@ function renderVisualizationFilterPanel(state, onChange) {
     || (state.viewMode === 'player' && !state.playerId)
     || (state.viewMode === 'compare' && selectedComparisonIds.length === 0);
 
-  if (!isStatChartsTab) {
+  if (!isAxisChartTab) {
     if (state.viewMode === 'player') panel.appendChild(makeField('Player', playerSelect));
     if (state.viewMode === 'compare') panel.appendChild(comparisonField);
     panel.appendChild(makeField('Partner', partnerSelect));
@@ -4938,6 +5003,51 @@ function renderVisualizationChartModeControl(chartMode, onChange) {
   return fieldset;
 }
 
+function getWinLossSetPoints(games, scope, xDefinition, yDefinition) {
+  const selectedSet = Number(scope);
+  const points = [];
+
+  for (const game of games) {
+    const setNumbers = getCompletedSetNumbers(game).length > 0
+      ? getCompletedSetNumbers(game)
+      : getGameLogSetNumbers(game);
+    for (const setNumber of setNumbers) {
+      if ([1, 2, 3].includes(selectedSet) && setNumber !== selectedSet) continue;
+
+      const setEvents = teamStatsEventsForGame(game).filter((event) =>
+        getEventSetNumber(game, event) === setNumber,
+      );
+      if (setEvents.length === 0) continue;
+
+      const pointTotals = computePointTotals(setEvents);
+      const teamStats = getPlayerStatsForDisplay(
+        computeStats(setEvents, 'team', pointTotals),
+        1,
+        false,
+      );
+      const x = xDefinition.rankingDefinition.getValue(teamStats);
+      const y = yDefinition.rankingDefinition.getValue(teamStats);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+      const score = computeScore(game, setNumber);
+      if (score.team === score.opponent) continue;
+      const won = score.team > score.opponent;
+      points.push({
+        label: `${visualizationShortDate(game)} · Set ${setNumber}`,
+        opponent: game.opponentName || 'Unknown opponent',
+        setNumber,
+        score: `${score.team}–${score.opponent}`,
+        result: won ? 'Win' : 'Loss',
+        color: won ? '#16a34a' : '#dc2626',
+        x,
+        y,
+      });
+    }
+  }
+
+  return points;
+}
+
 function getStatChartPoints(games, scope, xDefinition, yDefinition) {
   return getPlayerStatsRows(games, scope)
     .filter((row) => !findPlayerById(row.playerId)?.practicePlayer)
@@ -4970,12 +5080,15 @@ function calculateStatChartRegression(points) {
   return { slope, intercept: meanY - slope * meanX };
 }
 
-function renderStatChartScatter(points, xDefinition, yDefinition) {
+function renderStatChartScatter(points, xDefinition, yDefinition, options = {}) {
   const section = document.createElement('section');
   section.className = 'visualization-chart-section';
+  const isWinLoss = options.mode === 'winLoss';
 
   const heading = document.createElement('h2');
-  heading.textContent = `${xDefinition.label} vs ${yDefinition.label}`;
+  heading.textContent = isWinLoss
+    ? `Win/Loss: ${xDefinition.label} vs ${yDefinition.label}`
+    : `${xDefinition.label} vs ${yDefinition.label}`;
   section.appendChild(heading);
 
   const chartWrap = document.createElement('div');
@@ -4983,7 +5096,9 @@ function renderStatChartScatter(points, xDefinition, yDefinition) {
   if (points.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
-    empty.textContent = 'No players have completed-game data for both selected statistics.';
+    empty.textContent = isWinLoss
+      ? 'No completed sets have data for both selected statistics.'
+      : 'No players have completed-game data for both selected statistics.';
     chartWrap.appendChild(empty);
     section.appendChild(chartWrap);
     return section;
@@ -5051,14 +5166,16 @@ function renderStatChartScatter(points, xDefinition, yDefinition) {
     svg.appendChild(yLabel);
   }
 
-  const regression = calculateStatChartRegression(points);
-  const regressionY1 = regression.intercept + regression.slope * xMin;
-  const regressionY2 = regression.intercept + regression.slope * xMax;
-  svg.appendChild(svgElement('line', {
-    x1: xFor(xMin), y1: yFor(regressionY1),
-    x2: xFor(xMax), y2: yFor(regressionY2),
-    class: 'visualization-regression-line',
-  }));
+  const regression = isWinLoss ? null : calculateStatChartRegression(points);
+  if (regression) {
+    const regressionY1 = regression.intercept + regression.slope * xMin;
+    const regressionY2 = regression.intercept + regression.slope * xMax;
+    svg.appendChild(svgElement('line', {
+      x1: xFor(xMin), y1: yFor(regressionY1),
+      x2: xFor(xMax), y2: yFor(regressionY2),
+      class: 'visualization-regression-line',
+    }));
+  }
 
   const placedLabelBounds = [];
   const labelBounds = (x, y, labelWidth, textAnchor) => ({
@@ -5080,8 +5197,13 @@ function renderStatChartScatter(points, xDefinition, yDefinition) {
     const circleX = xFor(point.x);
     const circleY = yFor(point.y);
     svg.appendChild(svgElement('circle', {
-      cx: circleX, cy: circleY, r: 5, fill: '#0055A2', class: 'visualization-point',
+      cx: circleX,
+      cy: circleY,
+      r: 5,
+      fill: point.color || '#0055A2',
+      class: 'visualization-point',
     }));
+    if (isWinLoss) continue;
     const labelWidth = Math.max(24, point.label.length * 5.5);
     const regressionYAtPoint = yFor(regression.intercept + regression.slope * point.x);
     const lineIsNearPoint = Math.abs(circleY - regressionYAtPoint) < 18;
@@ -5142,19 +5264,34 @@ function renderStatChartScatter(points, xDefinition, yDefinition) {
   legend.className = 'visualization-legend';
   const pointLegend = document.createElement('span');
   pointLegend.className = 'visualization-legend-item';
-  const pointSwatch = document.createElement('span');
-  pointSwatch.className = 'visualization-legend-swatch';
-  pointSwatch.style.backgroundColor = '#0055A2';
-  pointLegend.appendChild(pointSwatch);
-  pointLegend.appendChild(document.createTextNode('Player'));
-  legend.appendChild(pointLegend);
-  const regressionLegend = document.createElement('span');
-  regressionLegend.className = 'visualization-legend-item';
-  const regressionSwatch = document.createElement('span');
-  regressionSwatch.className = 'visualization-legend-line';
-  regressionLegend.appendChild(regressionSwatch);
-  regressionLegend.appendChild(document.createTextNode('Linear regression'));
-  legend.appendChild(regressionLegend);
+  if (isWinLoss) {
+    for (const [label, color] of [['Won set', '#16a34a'], ['Lost set', '#dc2626']]) {
+      const entry = document.createElement('span');
+      entry.className = 'visualization-legend-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'visualization-legend-swatch';
+      swatch.style.backgroundColor = color;
+      entry.appendChild(swatch);
+      entry.appendChild(document.createTextNode(label));
+      legend.appendChild(entry);
+    }
+  } else {
+    const pointSwatch = document.createElement('span');
+    pointSwatch.className = 'visualization-legend-swatch';
+    pointSwatch.style.backgroundColor = '#0055A2';
+    pointLegend.appendChild(pointSwatch);
+    pointLegend.appendChild(document.createTextNode('Player'));
+    legend.appendChild(pointLegend);
+  }
+  if (!isWinLoss) {
+    const regressionLegend = document.createElement('span');
+    regressionLegend.className = 'visualization-legend-item';
+    const regressionSwatch = document.createElement('span');
+    regressionSwatch.className = 'visualization-legend-line';
+    regressionLegend.appendChild(regressionSwatch);
+    regressionLegend.appendChild(document.createTextNode('Linear regression'));
+    legend.appendChild(regressionLegend);
+  }
   chartWrap.appendChild(legend);
   section.appendChild(chartWrap);
   return section;
@@ -5181,7 +5318,45 @@ function renderStatChartValuesTable(points, xDefinition, yDefinition) {
   return section;
 }
 
-function renderStatChartAxisSelector(definitions, xStatId, yStatId, onChange) {
+function renderWinLossValuesTable(points, xDefinition, yDefinition) {
+  const section = document.createElement('section');
+  section.className = 'visualization-snapshot-section';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Set Values';
+  section.appendChild(title);
+
+  const table = document.createElement('table');
+  table.className = 'stats-table visualization-snapshot-table';
+  table.appendChild(renderStatsHeader([
+    'Set',
+    'Opponent',
+    'Result',
+    'Score',
+    xDefinition.label,
+    yDefinition.label,
+  ]));
+  for (const point of points) {
+    const row = document.createElement('tr');
+    row.appendChild(renderTableCell(point.label, 'th'));
+    row.appendChild(renderTableCell(point.opponent));
+    row.appendChild(renderTableCell(point.result));
+    row.appendChild(renderTableCell(point.score));
+    row.appendChild(renderTableCell(xDefinition.rankingDefinition.formatter(point.x)));
+    row.appendChild(renderTableCell(yDefinition.rankingDefinition.formatter(point.y)));
+    table.appendChild(row);
+  }
+  section.appendChild(table);
+  return section;
+}
+
+function renderStatChartAxisSelector(
+  definitions,
+  xStatId,
+  yStatId,
+  onChange,
+  hintText = 'Choose two Player Rankings statistics to compare across the roster.',
+) {
   const panel = document.createElement('section');
   panel.className = 'stat-breakdown-selector stat-chart-axis-selector';
   const title = document.createElement('h2');
@@ -5189,7 +5364,7 @@ function renderStatChartAxisSelector(definitions, xStatId, yStatId, onChange) {
   panel.appendChild(title);
   const hint = document.createElement('p');
   hint.className = 'player-stats-meta';
-  hint.textContent = 'Choose two Player Rankings statistics to compare across the roster.';
+  hint.textContent = hintText;
   panel.appendChild(hint);
 
   const controls = document.createElement('div');
@@ -5264,7 +5439,7 @@ function renderVisualizationsScreen(state = {}) {
   if (!VISUALIZATION_TABS.some(([id]) => id === activeState.tab)) activeState.tab = 'statTrends';
   if (!['team', 'player', 'compare'].includes(activeState.viewMode)) activeState.viewMode = 'team';
   if (!['daily', 'cumulative'].includes(activeState.chartMode)) activeState.chartMode = 'daily';
-  if (activeState.tab === 'statCharts') {
+  if (activeState.tab === 'statCharts' || activeState.tab === 'winLoss') {
     activeState.viewMode = 'team';
     activeState.playerId = '';
     activeState.comparePlayerIds = [];
@@ -5279,7 +5454,7 @@ function renderVisualizationsScreen(state = {}) {
     activeState.statIds = validStatIds;
     selectedMetrics = definitions.filter((definition) => validStatIds.includes(definition.id));
     activeState.metricId = '';
-  } else if (activeState.tab === 'statCharts') {
+  } else if (activeState.tab === 'statCharts' || activeState.tab === 'winLoss') {
     const defaultX = definitions.find((definition) => definition.id === DEFAULT_VISUALIZATION_STATE.xStatId)
       || definitions[0];
     const defaultY = definitions.find((definition) => definition.id === DEFAULT_VISUALIZATION_STATE.yStatId)
@@ -5319,7 +5494,13 @@ function renderVisualizationsScreen(state = {}) {
   tabBar.className = 'statistical-breakdown-tabs visualization-tabs';
   for (const [tabId, label] of VISUALIZATION_TABS) {
     const button = makeButton(label, tabId === activeState.tab ? 'primary-btn' : 'secondary-btn', () => {
-      renderVisualizationsScreen({ ...activeState, tab: tabId, metricId: '' });
+      const nextState = { ...activeState, tab: tabId, metricId: '' };
+      if (tabId === 'winLoss' && activeState.tab !== 'winLoss') {
+        nextState.yStatId = 'metric:wKoPct';
+      } else if (tabId === 'statCharts' && activeState.tab !== 'statCharts') {
+        nextState.yStatId = DEFAULT_VISUALIZATION_STATE.yStatId;
+      }
+      renderVisualizationsScreen(nextState);
     });
     button.classList.add('statistical-breakdown-tab');
     button.setAttribute('aria-pressed', String(tabId === activeState.tab));
@@ -5344,7 +5525,7 @@ function renderVisualizationsScreen(state = {}) {
       'Select one or more Player Rankings statistics to chart over time.',
       'Choose Stats to Chart',
     ));
-  } else if (activeState.tab === 'statCharts') {
+  } else if (activeState.tab === 'statCharts' || activeState.tab === 'winLoss') {
     container.appendChild(renderStatChartAxisSelector(
       definitions,
       activeState.xStatId,
@@ -5354,6 +5535,9 @@ function renderVisualizationsScreen(state = {}) {
         xStatId,
         yStatId,
       }),
+      activeState.tab === 'winLoss'
+        ? 'Choose two Player Rankings statistics to compare across individual completed sets.'
+        : undefined,
     ));
   }
 
@@ -5361,15 +5545,15 @@ function renderVisualizationsScreen(state = {}) {
   const completedGames = matchingGames
     .filter((game) => game.isComplete)
     .sort((a, b) => new Date(a.playedDate || a.date) - new Date(b.playedDate || b.date));
-  const isStatChartsTab = activeState.tab === 'statCharts';
-  const subjects = isStatChartsTab ? [] : visualizationSubjects(activeState);
+  const isAxisChartTab = activeState.tab === 'statCharts' || activeState.tab === 'winLoss';
+  const subjects = isAxisChartTab ? [] : visualizationSubjects(activeState);
 
-  if (!isStatChartsTab && activeState.viewMode === 'compare' && subjects.length < 2) {
+  if (!isAxisChartTab && activeState.viewMode === 'compare' && subjects.length < 2) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
     empty.textContent = 'Select at least two players to compare.';
     container.appendChild(empty);
-  } else if (!isStatChartsTab && subjects.length === 0) {
+  } else if (!isAxisChartTab && subjects.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
     empty.textContent = 'Select a player to view individual visualizations.';
@@ -5418,6 +5602,20 @@ function renderVisualizationsScreen(state = {}) {
         );
         container.appendChild(renderStatChartScatter(points, selectedMetrics[0], selectedMetrics[1]));
         container.appendChild(renderStatChartValuesTable(points, selectedMetrics[0], selectedMetrics[1]));
+      } else if (activeState.tab === 'winLoss') {
+        const points = getWinLossSetPoints(
+          completedGames,
+          scope,
+          selectedMetrics[0],
+          selectedMetrics[1],
+        );
+        container.appendChild(renderStatChartScatter(
+          points,
+          selectedMetrics[0],
+          selectedMetrics[1],
+          { mode: 'winLoss' },
+        ));
+        container.appendChild(renderWinLossValuesTable(points, selectedMetrics[0], selectedMetrics[1]));
       } else {
         container.appendChild(renderVisualizationChart(
           subjects,
@@ -5670,15 +5868,38 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
     ? getGameLogSetNumbers(game)
     : [activeScope];
   const isMultiSet = activeScope === 'match' && setNumbers.length > 1;
+
+  let setLogDetails = [];
+  if (isMultiSet) {
+    const setLogControl = document.createElement('label');
+    setLogControl.className = 'summary-scope-control summary-log-set-control';
+    setLogControl.textContent = 'Choose set to expand';
+    const setLogSelect = document.createElement('select');
+    for (const setNumber of setNumbers) {
+      setLogSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
+    }
+    setLogControl.appendChild(setLogSelect);
+    section.appendChild(setLogControl);
+
+    setLogSelect.addEventListener('change', () => {
+      for (const { setNumber, details } of setLogDetails) {
+        details.open = String(setNumber) === setLogSelect.value;
+      }
+    });
+  }
+
   for (const setNumber of setNumbers) {
     const details = document.createElement('details');
     details.className = 'live-stats-details summary-log-details';
+    details.dataset.setNumber = String(setNumber);
+    if (isMultiSet && setNumber === setNumbers[0]) details.open = true;
 
     const toggle = document.createElement('summary');
-    toggle.textContent = isMultiSet ? `Show Set ${setNumber} Game Log` : 'Show Game Log';
+    toggle.textContent = isMultiSet ? `Set ${setNumber} Log` : 'Game Log';
     details.appendChild(toggle);
     details.appendChild(renderEventLog(game, nameA, nameB, setNumber));
     section.appendChild(details);
+    setLogDetails.push({ setNumber, details });
   }
 
   return section;
@@ -5708,6 +5929,7 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
   list.className = 'event-log';
   const eventStartScores = getEventStartScores(game);
   const renderedPointActions = new Set();
+  const renderedCheckedPointLabels = new Set();
   events.forEach(({ event, eventIndex }) => {
     if (event.type === 'set_boundary' || event.action === 'set_end') {
       const item = document.createElement('li');
@@ -5735,6 +5957,15 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
     startScore.className = 'event-start-score';
     startScore.textContent = `${scoreAtStart.team}–${scoreAtStart.opponent}`;
     point.appendChild(startScore);
+    if (isPointChecked(game, event.pointNumber)
+      && !renderedCheckedPointLabels.has(event.pointNumber)) {
+      renderedCheckedPointLabels.add(event.pointNumber);
+      const checkedLabel = document.createElement('span');
+      checkedLabel.className = 'event-check-point-tag';
+      checkedLabel.textContent = 'Check Point';
+      checkedLabel.title = 'Marked to return to later';
+      point.appendChild(checkedLabel);
+    }
     item.appendChild(point);
 
     const details = document.createElement('div');

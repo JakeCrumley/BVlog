@@ -118,6 +118,20 @@ function renderHomeScreen() {
     actions.appendChild(button);
   }
 
+  const supportButton = document.createElement('button');
+  supportButton.type = 'button';
+  supportButton.className = 'home-action-btn';
+  supportButton.addEventListener('click', () => {
+    window.open('https://forms.gle/t5YTgWYY4VWL1GW58', '_blank', 'noopener,noreferrer');
+  });
+  const supportLabel = document.createElement('strong');
+  supportLabel.textContent = 'Support/Suggestions';
+  supportButton.appendChild(supportLabel);
+  const supportDescription = document.createElement('span');
+  supportDescription.textContent = 'Send feedback, report an issue, or suggest an improvement.';
+  supportButton.appendChild(supportDescription);
+  actions.appendChild(supportButton);
+
   container.appendChild(actions);
 
   const installButton = document.createElement('button');
@@ -3601,6 +3615,12 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
 }
 
 function renderGameSummaryScreen(gameId, scope = 'match') {
+  // Rebuilding the summary does not reset the browser's document scroll
+  // position. Always start summaries at the top, including after returning
+  // from a game-log edit.
+  window.scrollTo({ left: 0, top: 0, behavior: 'auto' });
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
   clearApp();
   appEl.appendChild(renderNavBar('history'));
 
@@ -3700,6 +3720,7 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
       navigate('liveGame', game.id);
     }));
   }
+
   container.appendChild(actions);
 
   container.appendChild(renderMetricTable(stats, nameA, nameB));
@@ -5877,6 +5898,9 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
 
   let setLogDetails = [];
   if (isMultiSet) {
+    const setLogControls = document.createElement('div');
+    setLogControls.className = 'summary-log-controls';
+
     const setLogControl = document.createElement('label');
     setLogControl.className = 'summary-scope-control summary-log-set-control';
     setLogControl.textContent = 'Choose set to expand';
@@ -5885,7 +5909,8 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
       setLogSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
     }
     setLogControl.appendChild(setLogSelect);
-    section.appendChild(setLogControl);
+    setLogControls.appendChild(setLogControl);
+    section.appendChild(setLogControls);
 
     setLogSelect.addEventListener('change', () => {
       for (const { setNumber, details } of setLogDetails) {
@@ -6026,6 +6051,7 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
     item.appendChild(inputActions);
 
     if (!renderedPointActions.has(event.pointNumber)) {
+      const isFirstPointInSet = setNumber !== null && renderedPointActions.size === 0;
       renderedPointActions.add(event.pointNumber);
       const pointActions = document.createElement('div');
       pointActions.className = 'event-point-actions';
@@ -6052,6 +6078,19 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
       });
       deleteButton.title = `Delete Point ${event.pointNumber}`;
       pointActions.appendChild(deleteButton);
+
+      if (isFirstPointInSet && getGameLogSetNumbers(game).length > 1) {
+        const deleteSetButton = makeButton('Delete Set', 'event-delete-btn', () => {
+          if (!confirm(`Delete Set ${setNumber} and all of its logged points? This cannot be undone.`)) return;
+          if (!deleteGameSet(game.id, setNumber)) {
+            alert('Could not delete that set — try again.');
+            return;
+          }
+          navigate('gameSummary', { gameId: game.id, scope: 'match' });
+        });
+        deleteSetButton.title = `Delete Set ${setNumber}`;
+        pointActions.appendChild(deleteSetButton);
+      }
       item.appendChild(pointActions);
     }
     list.appendChild(item);

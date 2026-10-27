@@ -1381,10 +1381,37 @@ h1 {
   min-height: 110px;
   box-sizing: border-box;
   resize: vertical;
+  background: #0f172a;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  color: #ffffff;
+  padding: 12px;
+  color-scheme: dark;
+}
+
+.game-notes-form textarea::placeholder {
+  color: #94a3b8;
 }
 
 .game-notes-actions {
   margin-top: 0;
+}
+
+.summary-log-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.summary-log-controls .summary-scope-control {
+  margin: 0;
+}
+
+.summary-log-controls select {
+  flex: 1;
+  min-width: 0;
 }
 
 .match-card-list {

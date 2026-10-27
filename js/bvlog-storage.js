@@ -685,6 +685,88 @@ function updateGameNotes(gameId, notes) {
   return saveGame(game, { sync: true });
 }
 
+// Removes one set from a multi-set match and closes the numbering gaps in the
+// remaining set and point logs. The match stays paused or completed as it was.
+function deleteGameSet(gameId, setNumber) {
+  const game = getGameById(gameId);
+  const target = Number(setNumber);
+  if (!game || !Number.isInteger(target) || ![1, 2, 3].includes(target)) return false;
+
+  const setNumbers = [...new Set([
+    ...getCompletedSetNumbers(game),
+    ...(game.events || []).map((event) => getEventSetNumber(game, event)),
+    getCurrentSetNumber(game),
+  ])].filter((number) => [1, 2, 3].includes(Number(number))).sort((a, b) => a - b);
+  if (setNumbers.length <= 1 || !setNumbers.includes(target)) return false;
+
+  const deletedPointNumbers = [...new Set((game.events || [])
+    .filter((event) => getEventSetNumber(game, event) === target)
+    .map((event) => Number(event.pointNumber))
+    .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))]
+    .sort((a, b) => a - b);
+  const pointWasDeleted = (pointNumber) => deletedPointNumbers.includes(Number(pointNumber));
+  const remapPointNumber = (pointNumber) => {
+    const number = Number(pointNumber);
+    if (!Number.isInteger(number) || number < 1) return pointNumber;
+    if (pointWasDeleted(number)) return null;
+    return number - deletedPointNumbers.filter((deletedPoint) => deletedPoint < number).length;
+  };
+  const remapPointList = (values) => [...new Set((Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0)
+    .map(remapPointNumber)
+    .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))]
+    .sort((a, b) => a - b);
+
+  game.events = (game.events || [])
+    .filter((event) => getEventSetNumber(game, event) !== target)
+    .map((event) => {
+      const eventSet = getEventSetNumber(game, event);
+      const nextPointNumber = remapPointNumber(event.pointNumber);
+      return {
+        ...event,
+        setNumber: eventSet > target ? eventSet - 1 : eventSet,
+        ...(nextPointNumber === null ? { pointNumber: null } : { pointNumber: nextPointNumber }),
+      };
+    });
+
+  const remapSetList = (values) => [...new Set((Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter((number) => [1, 2, 3].includes(number) && number !== target)
+    .map((number) => number > target ? number - 1 : number))]
+    .sort((a, b) => a - b);
+  game.completedSetNumbers = remapSetList(game.completedSetNumbers);
+
+  const startingActions = game.setStartingActions || { 1: game.startingAction };
+  const nextStartingActions = {};
+  for (const [key, value] of Object.entries(startingActions)) {
+    const number = Number(key);
+    if (![1, 2, 3].includes(number) || number === target) continue;
+    const nextNumber = number > target ? number - 1 : number;
+    if (value === 'serve' || value === 'receive') nextStartingActions[nextNumber] = value;
+  }
+  if (!nextStartingActions[1]) nextStartingActions[1] = game.startingAction === 'receive' ? 'receive' : 'serve';
+  game.setStartingActions = nextStartingActions;
+  game.startingAction = nextStartingActions[1];
+
+  const oldCurrentSet = getCurrentSetNumber(game);
+  const remappedCurrentSet = oldCurrentSet > target
+    ? oldCurrentSet - 1
+    : oldCurrentSet === target ? Math.max(1, oldCurrentSet - 1) : oldCurrentSet;
+  const remainingSetNumbers = setNumbers
+    .filter((number) => number !== target)
+    .map((number) => number > target ? number - 1 : number);
+  game.currentSetNumber = Math.min(
+    remappedCurrentSet,
+    Math.max(...remainingSetNumbers, 1),
+  );
+  game.setNumber = 1;
+  game.checkedPointNumbers = remapPointList(game.checkedPointNumbers);
+  game.reviewedPointNumbers = remapPointList(game.reviewedPointNumbers);
+
+  return saveGame(game, { sync: true });
+}
+
 // Removes one complete rally from a game log and closes the numbering gap so
 // the remaining chronological log stays easy to read. Non-rally events such
 // as set boundaries and server-swap corrections have no point number and are

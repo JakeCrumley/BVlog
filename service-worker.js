@@ -11,6 +11,7 @@ const BVLOG_APP_SHELL = [
   './js/bvlog-pwa.js',
   './js/bvlog-ui.js',
   './js/bvlog-app.js',
+  './San_Jose_State_Spartans_logo.svg',
   './volleyball-logo.jpg',
 ];
 

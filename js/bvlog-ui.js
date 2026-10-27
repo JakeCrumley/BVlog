@@ -65,8 +65,8 @@ function renderNavBar() {
   });
   const logo = document.createElement('img');
   logo.className = 'spartan-logo';
-  logo.src = 'volleyball-logo.jpg';
-  logo.alt = 'Volleyball logo';
+  logo.src = 'San_Jose_State_Spartans_logo.svg';
+  logo.alt = 'SJSU Spartan logo';
   brand.appendChild(logo);
 
   const title = document.createElement('span');

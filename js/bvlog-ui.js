@@ -65,8 +65,8 @@ function renderNavBar() {
   });
   const logo = document.createElement('img');
   logo.className = 'spartan-logo';
-  logo.src = 'San_Jose_State_Spartans_logo.svg';
-  logo.alt = 'SJSU Spartan logo';
+  logo.src = 'volleyball-logo.jpg';
+  logo.alt = 'Volleyball logo';
   brand.appendChild(logo);
 
   const title = document.createElement('span');
@@ -990,6 +990,8 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     container.appendChild(checkPointControl);
   }
 
+  container.appendChild(renderGameNotes(game, liveStatsScope, true));
+
   const liveStatsTitle = document.createElement('h2');
   liveStatsTitle.className = 'live-stats-title';
   liveStatsTitle.textContent = 'Stat Summary';
@@ -1836,6 +1838,9 @@ function normalizeImportedGame(game) {
     status: game.isComplete ? 'completed' : 'paused',
     notes: game.notes == null ? '' : String(game.notes),
     checkedPointNumbers: [...new Set((Array.isArray(game.checkedPointNumbers) ? game.checkedPointNumbers : [])
+      .map(Number)
+      .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))].sort((a, b) => a - b),
+    reviewedPointNumbers: [...new Set((Array.isArray(game.reviewedPointNumbers) ? game.reviewedPointNumbers : [])
       .map(Number)
       .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))].sort((a, b) => a - b),
     events: game.events.map((event) => ({
@@ -3705,7 +3710,7 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
   appEl.appendChild(container);
 }
 
-function renderGameNotes(game, scope = 'match') {
+function renderGameNotes(game, scope = 'match', returnToLive = false) {
   const section = document.createElement('section');
   section.className = 'summary-section game-notes-section';
 
@@ -3730,7 +3735,8 @@ function renderGameNotes(game, scope = 'match') {
       alert('Could not save the game note — try again.');
       return;
     }
-    navigate('gameSummary', { gameId: game.id, scope });
+    if (returnToLive) renderLiveTrackingScreen(game.id);
+    else navigate('gameSummary', { gameId: game.id, scope });
   }));
   form.appendChild(actions);
   section.appendChild(form);
@@ -5965,6 +5971,28 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
       checkedLabel.textContent = 'Check Point';
       checkedLabel.title = 'Marked to return to later';
       point.appendChild(checkedLabel);
+
+      const reviewedControl = document.createElement('label');
+      reviewedControl.className = 'event-reviewed-control';
+      const reviewedCheckbox = document.createElement('input');
+      reviewedCheckbox.type = 'checkbox';
+      reviewedCheckbox.checked = isPointReviewed(game, event.pointNumber);
+      reviewedCheckbox.setAttribute('aria-label', `Mark Point ${event.pointNumber} as reviewed`);
+      reviewedCheckbox.addEventListener('change', () => {
+        const currentGame = getGameById(game.id);
+        if (!currentGame || !setPointReviewed(currentGame, event.pointNumber, reviewedCheckbox.checked)) {
+          reviewedCheckbox.checked = !reviewedCheckbox.checked;
+          return;
+        }
+        if (!saveGame(currentGame, { sync: true })) {
+          reviewedCheckbox.checked = !reviewedCheckbox.checked;
+          setPointReviewed(currentGame, event.pointNumber, reviewedCheckbox.checked);
+          alert('Could not save the reviewed status — try again.');
+        }
+      });
+      reviewedControl.appendChild(reviewedCheckbox);
+      reviewedControl.appendChild(document.createTextNode(' Reviewed'));
+      point.appendChild(reviewedControl);
     }
     item.appendChild(point);
 

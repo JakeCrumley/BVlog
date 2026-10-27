@@ -11,9 +11,9 @@
   "theme_color": "#0038a8",
   "icons": [
     {
-      "src": "San_Jose_State_Spartans_logo.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "volleyball-logo.jpg",
+      "sizes": "980x980",
+      "type": "image/jpeg",
       "purpose": "any maskable"
     }
   ]

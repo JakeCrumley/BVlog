@@ -1725,6 +1725,22 @@ h1 {
   white-space: nowrap;
 }
 
+.event-reviewed-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #cbd5e1;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.event-reviewed-control input {
+  width: 14px;
+  height: 14px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
 .event-details {
   display: flex;
   flex-direction: column;

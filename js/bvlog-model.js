@@ -228,6 +228,7 @@ function createGame({ playerAId, playerBId, opponentName, startingAction, played
     setStartingActions: { 1: startingAction },
     events: [],       // Event[]  — the full chronological log
     checkedPointNumbers: [], // Point numbers a coach wants to revisit later
+    reviewedPointNumbers: [], // Checked points that have been reviewed
     isComplete: false,
     status: 'paused', // every incomplete game is paused until completed
   };

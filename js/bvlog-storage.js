@@ -269,6 +269,18 @@ function loadGameHistory() {
           changed = true;
         }
       }
+      if (!Array.isArray(game.reviewedPointNumbers)) {
+        game.reviewedPointNumbers = [];
+        changed = true;
+      } else {
+        const normalizedReviewedPoints = [...new Set(game.reviewedPointNumbers
+          .map(Number)
+          .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0))];
+        if (JSON.stringify(normalizedReviewedPoints) !== JSON.stringify(game.reviewedPointNumbers)) {
+          game.reviewedPointNumbers = normalizedReviewedPoints;
+          changed = true;
+        }
+      }
       if (typeof game.notes !== 'string') {
         game.notes = game.notes == null ? '' : String(game.notes);
         changed = true;
@@ -370,6 +382,14 @@ function isPointChecked(game, pointNumber) {
     && game.checkedPointNumbers.includes(target);
 }
 
+function isPointReviewed(game, pointNumber) {
+  const target = Number(pointNumber);
+  return Number.isInteger(target)
+    && target > 0
+    && Array.isArray(game?.reviewedPointNumbers)
+    && game.reviewedPointNumbers.includes(target);
+}
+
 function setPointChecked(game, pointNumber, checked) {
   if (!game) return false;
   const target = Number(pointNumber);
@@ -380,35 +400,61 @@ function setPointChecked(game, pointNumber, checked) {
     : [];
   const next = new Set(current);
   if (checked) next.add(target);
-  else next.delete(target);
+  else {
+    next.delete(target);
+    if (Array.isArray(game.reviewedPointNumbers)) {
+      game.reviewedPointNumbers = game.reviewedPointNumbers
+        .map(Number)
+        .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0 && pointNumber !== target);
+    }
+  }
   game.checkedPointNumbers = [...next].sort((a, b) => a - b);
   return true;
 }
 
+function setPointReviewed(game, pointNumber, reviewed) {
+  if (!game) return false;
+  const target = Number(pointNumber);
+  if (!Number.isInteger(target) || target < 1 || !isPointChecked(game, target)) return false;
+
+  const current = Array.isArray(game.reviewedPointNumbers)
+    ? game.reviewedPointNumbers.map(Number).filter((value) => Number.isInteger(value) && value > 0)
+    : [];
+  const next = new Set(current);
+  if (reviewed) next.add(target);
+  else next.delete(target);
+  game.reviewedPointNumbers = [...next].sort((a, b) => a - b);
+  return true;
+}
+
 function shiftCheckedPointNumbers(game, fromPointNumber, delta) {
-  if (!game || !Array.isArray(game.checkedPointNumbers)) return;
+  if (!game) return;
   const from = Number(fromPointNumber);
   const amount = Number(delta);
   if (!Number.isInteger(from) || !Number.isInteger(amount) || amount === 0) return;
 
-  game.checkedPointNumbers = [...new Set(game.checkedPointNumbers
+  const shift = (values) => [...new Set((Array.isArray(values) ? values : [])
     .map(Number)
     .filter((pointNumber) => Number.isInteger(pointNumber) && pointNumber > 0)
     .map((pointNumber) => pointNumber >= from ? pointNumber + amount : pointNumber)
     .filter((pointNumber) => pointNumber > 0))].sort((a, b) => a - b);
+  game.checkedPointNumbers = shift(game.checkedPointNumbers);
+  game.reviewedPointNumbers = shift(game.reviewedPointNumbers);
 }
 
 function removeCheckedPointNumber(game, pointNumber) {
-  if (!game || !Array.isArray(game.checkedPointNumbers)) return;
+  if (!game) return;
   const target = Number(pointNumber);
   if (!Number.isInteger(target)) return;
 
-  game.checkedPointNumbers = [...new Set(game.checkedPointNumbers
+  const remove = (values) => [...new Set((Array.isArray(values) ? values : [])
     .map(Number)
     .filter((checkedPoint) => Number.isInteger(checkedPoint) && checkedPoint > 0)
     .filter((checkedPoint) => checkedPoint !== target)
     .map((checkedPoint) => checkedPoint > target ? checkedPoint - 1 : checkedPoint))]
     .sort((a, b) => a - b);
+  game.checkedPointNumbers = remove(game.checkedPointNumbers);
+  game.reviewedPointNumbers = remove(game.reviewedPointNumbers);
 }
 
 // Merges imported players and games into local storage. Existing games with

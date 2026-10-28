@@ -38,6 +38,7 @@ const SCREENS = {
   gameSummary:    (state) => renderGameSummaryScreen(
     state && typeof state === 'object' ? state.gameId : state,
     state && typeof state === 'object' ? state.scope : 'match',
+    state && typeof state === 'object' ? state.restoreScroll : null,
   ),
 };
 

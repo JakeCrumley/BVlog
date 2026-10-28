@@ -13,6 +13,32 @@ const appEl = document.getElementById('app');
 let pointEditContext = null;
 const liveStatsScopeByGameId = new Map();
 
+function getDocumentScrollPosition() {
+  return {
+    left: window.scrollX || document.documentElement.scrollLeft || document.body.scrollLeft || 0,
+    top: window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0,
+  };
+}
+
+function captureSummaryReturnState(scope = 'match') {
+  return {
+    scope,
+    restoreScroll: getDocumentScrollPosition(),
+  };
+}
+
+function navigateToSummary(gameId, returnState = null) {
+  if (returnState?.restoreScroll) {
+    navigate('gameSummary', {
+      gameId,
+      scope: returnState.scope || 'match',
+      restoreScroll: returnState.restoreScroll,
+    });
+    return;
+  }
+  navigate('gameSummary', gameId);
+}
+
 function clearApp() {
   appEl.innerHTML = '';
 }
@@ -1098,8 +1124,9 @@ function renderTrackingControls(gameId, options = {}) {
     cancelBtn.className = 'secondary-btn cancel-point-edit-btn';
     cancelBtn.textContent = 'Cancel Point Edit';
     cancelBtn.addEventListener('click', () => {
+      const summaryReturn = editContext.summaryReturn;
       clearPointEditContext();
-      navigate('gameSummary', gameId);
+      navigateToSummary(gameId, summaryReturn);
     });
     controls.appendChild(undoBtn);
     controls.appendChild(cancelBtn);
@@ -1457,8 +1484,9 @@ function finalizeEvent(gameId, pending) {
         alert('Could not save the edited point — try again.');
         return;
       }
+      const summaryReturn = editContext.summaryReturn;
       clearPointEditContext();
-      navigate('gameSummary', gameId);
+      navigateToSummary(gameId, summaryReturn);
       return;
     }
 
@@ -2146,7 +2174,7 @@ function createBackupImportControl(label, accept, onFile) {
   return wrapper;
 }
 
-function beginPointEdit(gameId, pointNumber) {
+function beginPointEdit(gameId, pointNumber, summaryScope = null) {
   const game = getGameById(gameId);
   if (!game) return;
 
@@ -2166,11 +2194,12 @@ function beginPointEdit(gameId, pointNumber) {
     prefixEvents: game.events.slice(0, firstPointEventIndex),
     laterEvents: game.events.slice(lastPointEventIndex + 1),
     replacementEvents: [],
+    summaryReturn: summaryScope === null ? null : captureSummaryReturnState(summaryScope),
   };
   navigate('liveGame', gameId);
 }
 
-function beginPointInsert(gameId, pointNumber) {
+function beginPointInsert(gameId, pointNumber, summaryScope = null) {
   const game = getGameById(gameId);
   if (!game) return;
 
@@ -2184,13 +2213,19 @@ function beginPointInsert(gameId, pointNumber) {
     prefixEvents: game.events.slice(0, firstPointEventIndex),
     laterEvents: game.events.slice(firstPointEventIndex),
     replacementEvents: [],
+    summaryReturn: summaryScope === null ? null : captureSummaryReturnState(summaryScope),
   };
   navigate('liveGame', gameId);
 }
 
-function beginPointInputEdit(gameId, eventId, eventIndex) {
+function beginPointInputEdit(gameId, eventId, eventIndex, summaryScope = null) {
   if (!getGameById(gameId)) return;
-  navigate('editPointInput', { gameId, eventId, eventIndex });
+  navigate('editPointInput', {
+    gameId,
+    eventId,
+    eventIndex,
+    returnToSummary: summaryScope === null ? null : captureSummaryReturnState(summaryScope),
+  });
 }
 
 function findGameEventForInputEdit(game, eventId, eventIndex) {
@@ -2316,7 +2351,9 @@ function renderPointInputEditScreen(state = {}) {
   const buttonRow = document.createElement('div');
   buttonRow.className = 'summary-actions';
   const saveButton = makeButton('Save Input', 'primary-btn', () => form.requestSubmit());
-  const cancelButton = makeButton('Cancel', 'secondary-btn', () => navigate('gameSummary', gameId));
+  const cancelButton = makeButton('Cancel', 'secondary-btn', () => {
+    navigateToSummary(gameId, state.returnToSummary);
+  });
   buttonRow.appendChild(saveButton);
   buttonRow.appendChild(cancelButton);
   form.appendChild(buttonRow);
@@ -2366,7 +2403,7 @@ function renderPointInputEditScreen(state = {}) {
       errorMsg.hidden = false;
       return;
     }
-    navigate('gameSummary', gameId);
+    navigateToSummary(gameId, state.returnToSummary);
   });
 
   container.appendChild(form);
@@ -3614,13 +3651,15 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
   return section;
 }
 
-function renderGameSummaryScreen(gameId, scope = 'match') {
-  // Rebuilding the summary does not reset the browser's document scroll
-  // position. Always start summaries at the top, including after returning
-  // from a game-log edit.
-  window.scrollTo({ left: 0, top: 0, behavior: 'auto' });
-  document.documentElement.scrollTop = 0;
-  document.body.scrollTop = 0;
+function renderGameSummaryScreen(gameId, scope = 'match', restoreScroll = null) {
+  const shouldRestoreScroll = restoreScroll
+    && Number.isFinite(Number(restoreScroll.top))
+    && Number.isFinite(Number(restoreScroll.left));
+  if (!shouldRestoreScroll) {
+    window.scrollTo({ left: 0, top: 0, behavior: 'auto' });
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }
   clearApp();
   appEl.appendChild(renderNavBar('history'));
 
@@ -3729,6 +3768,22 @@ function renderGameSummaryScreen(gameId, scope = 'match') {
   container.appendChild(renderSummaryGameLogs(game, nameA, nameB, activeScope));
 
   appEl.appendChild(container);
+
+  if (shouldRestoreScroll) {
+    const restore = () => {
+      window.scrollTo({
+        left: Number(restoreScroll.left),
+        top: Number(restoreScroll.top),
+        behavior: 'auto',
+      });
+      document.documentElement.scrollLeft = Number(restoreScroll.left);
+      document.documentElement.scrollTop = Number(restoreScroll.top);
+      document.body.scrollLeft = Number(restoreScroll.left);
+      document.body.scrollTop = Number(restoreScroll.top);
+    };
+    restore();
+    requestAnimationFrame(restore);
+  }
 }
 
 function renderGameNotes(game, scope = 'match', returnToLive = false) {
@@ -3757,7 +3812,7 @@ function renderGameNotes(game, scope = 'match', returnToLive = false) {
       return;
     }
     if (returnToLive) renderLiveTrackingScreen(game.id);
-    else navigate('gameSummary', { gameId: game.id, scope });
+    else navigateToSummary(game.id, captureSummaryReturnState(scope));
   }));
   form.appendChild(actions);
   section.appendChild(form);
@@ -5928,7 +5983,7 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
     const toggle = document.createElement('summary');
     toggle.textContent = isMultiSet ? `Set ${setNumber} Log` : 'Game Log';
     details.appendChild(toggle);
-    details.appendChild(renderEventLog(game, nameA, nameB, setNumber));
+    details.appendChild(renderEventLog(game, nameA, nameB, setNumber, activeScope));
     section.appendChild(details);
     setLogDetails.push({ setNumber, details });
   }
@@ -5936,7 +5991,7 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
   return section;
 }
 
-function renderEventLog(game, nameA, nameB, setNumber = null) {
+function renderEventLog(game, nameA, nameB, setNumber = null, summaryScope = null) {
   const section = document.createElement('section');
   section.className = 'summary-section';
 
@@ -5988,7 +6043,10 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
     startScore.className = 'event-start-score';
     startScore.textContent = `${scoreAtStart.team}–${scoreAtStart.opponent}`;
     point.appendChild(startScore);
-    if (isPointChecked(game, event.pointNumber)
+    const pointIsChecked = isPointChecked(game, event.pointNumber);
+    const pointIsReviewed = isPointReviewed(game, event.pointNumber);
+    if (pointIsChecked
+      && !pointIsReviewed
       && !renderedCheckedPointLabels.has(event.pointNumber)) {
       renderedCheckedPointLabels.add(event.pointNumber);
       const checkedLabel = document.createElement('span');
@@ -6001,7 +6059,7 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
       reviewedControl.className = 'event-reviewed-control';
       const reviewedCheckbox = document.createElement('input');
       reviewedCheckbox.type = 'checkbox';
-      reviewedCheckbox.checked = isPointReviewed(game, event.pointNumber);
+      reviewedCheckbox.checked = false;
       reviewedCheckbox.setAttribute('aria-label', `Mark Point ${event.pointNumber} as reviewed`);
       reviewedCheckbox.addEventListener('change', () => {
         const currentGame = getGameById(game.id);
@@ -6044,7 +6102,7 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
     const inputActions = document.createElement('div');
     inputActions.className = 'event-input-actions';
     const editInputButton = makeButton('Edit Input', 'event-edit-btn', () => {
-      beginPointInputEdit(game.id, event.id, eventIndex);
+      beginPointInputEdit(game.id, event.id, eventIndex, summaryScope);
     });
     editInputButton.title = 'Change this specific logged input without replaying the point';
     inputActions.appendChild(editInputButton);
@@ -6057,13 +6115,13 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
       pointActions.className = 'event-point-actions';
 
       const editButton = makeButton('Edit Point', 'event-edit-btn', () => {
-        beginPointEdit(game.id, event.pointNumber);
+        beginPointEdit(game.id, event.pointNumber, summaryScope);
       });
       editButton.title = `Edit Point ${event.pointNumber} without changing later points`;
       pointActions.appendChild(editButton);
 
       const insertButton = makeButton('Insert Before', 'event-edit-btn', () => {
-        beginPointInsert(game.id, event.pointNumber);
+        beginPointInsert(game.id, event.pointNumber, summaryScope);
       });
       insertButton.title = `Add a new point before Point ${event.pointNumber}`;
       pointActions.appendChild(insertButton);
@@ -6074,7 +6132,9 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
           alert('Could not delete that point — try again.');
           return;
         }
-        navigate('gameSummary', game.id);
+        navigateToSummary(game.id, summaryScope === null
+          ? null
+          : captureSummaryReturnState(summaryScope));
       });
       deleteButton.title = `Delete Point ${event.pointNumber}`;
       pointActions.appendChild(deleteButton);
@@ -6086,7 +6146,7 @@ function renderEventLog(game, nameA, nameB, setNumber = null) {
             alert('Could not delete that set — try again.');
             return;
           }
-          navigate('gameSummary', { gameId: game.id, scope: 'match' });
+          navigateToSummary(game.id, captureSummaryReturnState(summaryScope || 'match'));
         });
         deleteSetButton.title = `Delete Set ${setNumber}`;
         pointActions.appendChild(deleteSetButton);

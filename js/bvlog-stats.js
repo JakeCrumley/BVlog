@@ -838,3 +838,65 @@ function computePlayerStatsAcrossGames(games, scope = 'match') {
     stats: computeStats(entry.events, 'team', entry.pointTotals),
   }));
 }
+
+// Stat Rankings can optionally narrow attacking metrics to a specific attack
+// context. The normal player totals remain unchanged; only the attacking
+// metric values are recalculated from matching attack events.
+const STAT_RANKING_ATTACK_METRIC_KEYS = new Set([
+  'firstBallEff',
+  'wFirstBallEff',
+  'transitionEff',
+  'wTransitionEff',
+  'attackingEff',
+  'wAttackingEff',
+  'qualityKillPct',
+  'noContactKillPct',
+]);
+
+function statRankingAttackMatches(events, index, event, filters = {}) {
+  if (!breakdownIsAttack(event)) return false;
+  if (filters.attackType && event.attackType !== filters.attackType) return false;
+
+  if (filters.optionMode || filters.setQuality) {
+    const priorSet = breakdownPriorSet(events, index);
+    if (filters.optionMode === 'option' && priorSet?.action !== 'option') return false;
+    if (filters.optionMode === 'non_option'
+      && (!priorSet || priorSet.action === 'option')) return false;
+    if (filters.setQuality
+      && String(priorSet?.action || '') !== String(filters.setQuality)) return false;
+  }
+
+  return true;
+}
+
+function computePlayerStatsAcrossGamesWithContextFilters(games, scope = 'match', filters = {}) {
+  const baseRows = computePlayerStatsAcrossGames(games, scope);
+  const hasContextFilter = Boolean(filters.attackType || filters.optionMode || filters.setQuality);
+  if (!hasContextFilter) return baseRows;
+
+  const filteredEventsByPlayer = new Map();
+  for (const game of games || []) {
+    if (!game?.isComplete) continue;
+
+    const scopedEvents = getGameEventsForScope(game, scope);
+    for (const { playerId, side } of [
+      { playerId: game.playerAId, side: 'A' },
+      { playerId: game.playerBId, side: 'B' },
+    ]) {
+      if (!playerId) continue;
+      const matchingEvents = scopedEvents.filter((event, index) => event.player === side
+        && statRankingAttackMatches(scopedEvents, index, event, filters));
+      if (matchingEvents.length === 0) continue;
+      if (!filteredEventsByPlayer.has(playerId)) filteredEventsByPlayer.set(playerId, []);
+      filteredEventsByPlayer.get(playerId).push(...matchingEvents);
+    }
+  }
+
+  return baseRows.map((row) => {
+    const filteredEvents = filteredEventsByPlayer.get(row.playerId) || [];
+    const filteredStats = computeStats(filteredEvents, 'team');
+    const stats = { ...row.stats };
+    for (const key of STAT_RANKING_ATTACK_METRIC_KEYS) stats[key] = filteredStats[key];
+    return { ...row, stats };
+  });
+}

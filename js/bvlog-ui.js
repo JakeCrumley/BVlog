@@ -126,6 +126,7 @@ function renderHomeScreen() {
     ['Statistical Breakdowns', 'Explore serving, attacking, setting, and scoring patterns.', 'statisticalBreakdowns'],
     ['Data Visualization', 'Chart relationships and performance trends over time.', 'visualizations'],
     ['Cloud Sync', 'Connect this device to the shared coaching workspace.', 'cloudSync'],
+    ['Deploy Notes', 'View notes about app updates and deployments.', 'deployNotes'],
   ];
 
   for (const [label, description, screen] of destinations) {
@@ -174,6 +175,101 @@ function renderHomeScreen() {
   window.addEventListener('bvlog-pwa-install-available', updateInstallButton, { once: true });
   window.addEventListener('bvlog-pwa-install-state-changed', updateInstallButton, { once: true });
   container.appendChild(installButton);
+  appEl.appendChild(container);
+}
+
+// Add new entries at the beginning so the newest deployment is shown first.
+// Keep these notes hard-coded here until deployment-note editing is added.
+const DEPLOY_NOTES = [
+  {
+    title: 'Deployed 10/30/2026',
+    items: [
+      'Added Deploy Notes tab',
+      'Revamp of the Stat Rankings system',
+    ],
+  },
+  {
+    title: 'Deployed 10/27/2026',
+    items: [
+      'Check Point marker is removed after it is marked as “reviewed”',
+      'Fixed bug with summary page jumping issues',
+    ],
+  },
+  {
+    title: 'Deployed 10/27/2026',
+    items: [
+      'Added a “Delete Set” option in game summary',
+      'Fixed bug with summary page jumping issues',
+      'Changed note box style',
+      'Added maintenance form',
+    ],
+  },
+  {
+    title: 'Deployed 10/26/2026',
+    items: [
+      'Added note section in game summaries',
+      '“Check Point” markers for in-game logging — the Check Point marker is shown in the game log',
+      'Anyone can log in with the general login: jacob.crumley@sjsu.edu, password is password',
+      'Added Win/Loss tab to Data Visualization (unfinished)',
+      'Allow checked points to be marked as “reviewed”',
+      'Logo change',
+    ],
+  },
+];
+
+function renderDeployNotesScreen() {
+  clearApp();
+  appEl.appendChild(renderNavBar('home'));
+
+  const container = document.createElement('main');
+  container.className = 'screen deploy-notes-screen';
+
+  const title = document.createElement('h1');
+  title.textContent = 'Deploy Notes';
+  container.appendChild(title);
+
+  if (DEPLOY_NOTES.length === 0) {
+    const note = document.createElement('p');
+    note.className = 'empty-state';
+    note.textContent = 'No deploy notes have been added yet.';
+    container.appendChild(note);
+  }
+
+  const notesList = document.createElement('div');
+  notesList.className = 'deploy-notes-list';
+  for (const deployNote of DEPLOY_NOTES) {
+    const article = document.createElement('article');
+    article.className = 'deploy-note-card';
+
+    const heading = document.createElement('h2');
+    heading.textContent = deployNote.title || deployNote.date || 'Deployment';
+    article.appendChild(heading);
+
+    if (deployNote.date && deployNote.title) {
+      const date = document.createElement('p');
+      date.className = 'deploy-note-date';
+      date.textContent = deployNote.date;
+      article.appendChild(date);
+    }
+
+    if (Array.isArray(deployNote.items)) {
+      const items = document.createElement('ul');
+      for (const itemText of deployNote.items) {
+        const item = document.createElement('li');
+        item.textContent = itemText;
+        items.appendChild(item);
+      }
+      article.appendChild(items);
+    } else {
+      const body = document.createElement('p');
+      body.textContent = deployNote.body || '';
+      article.appendChild(body);
+    }
+    notesList.appendChild(article);
+  }
+  container.appendChild(notesList);
+
+  container.appendChild(makeButton('Back to Home', 'secondary-btn', () => navigate('home')));
   appEl.appendChild(container);
 }
 
@@ -3377,8 +3473,12 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
   appEl.appendChild(container);
 }
 
-function getPlayerStatsRows(games, scope = 'match') {
-  const aggregateRows = computePlayerStatsAcrossGames(games, normalizeStatsScope(scope));
+function getPlayerStatsRows(games, scope = 'match', contextFilters = {}) {
+  const aggregateRows = computePlayerStatsAcrossGamesWithContextFilters(
+    games,
+    normalizeStatsScope(scope),
+    contextFilters,
+  );
   const aggregateById = new Map(aggregateRows.map((row) => [row.playerId, row]));
   const rows = [];
 
@@ -3889,13 +3989,85 @@ function getPerformanceMetricGroups() {
   ];
 }
 
+const DEFAULT_STAT_RANKING_CONTEXT_FILTERS = {
+  attackType: '',
+  optionMode: '',
+  setQuality: '',
+};
+
+function renderStatRankingContextFilterPanel(filters, onChange) {
+  const activeFilters = {
+    ...DEFAULT_STAT_RANKING_CONTEXT_FILTERS,
+    ...filters,
+  };
+  const panel = document.createElement('section');
+  panel.className = 'history-filter-panel stat-ranking-context-filter-panel';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Attacking Context Filters';
+  panel.appendChild(title);
+
+  const makeSelectField = (labelText, options, value) => {
+    const field = document.createElement('label');
+    field.className = 'history-filter-field';
+    field.textContent = labelText;
+    const select = document.createElement('select');
+    for (const option of options) select.appendChild(new Option(option.label, option.value));
+    select.value = value;
+    field.appendChild(select);
+    return { field, select };
+  };
+
+  const attackTypeField = makeSelectField('Attack type', [
+    { label: 'Any attack type', value: '' },
+    { label: ATTACK_TYPE_LABELS[ATTACK_TYPES.HARD_DRIVEN], value: ATTACK_TYPES.HARD_DRIVEN },
+    { label: ATTACK_TYPE_LABELS[ATTACK_TYPES.SHOT], value: ATTACK_TYPES.SHOT },
+    { label: ATTACK_TYPE_LABELS[ATTACK_TYPES.FREEBALL], value: ATTACK_TYPES.FREEBALL },
+  ], activeFilters.attackType);
+  panel.appendChild(attackTypeField.field);
+
+  const optionModeField = makeSelectField('Option / non-option', [
+    { label: 'All attacks', value: '' },
+    { label: 'Option attacks', value: 'option' },
+    { label: 'Non-option attacks', value: 'non_option' },
+  ], activeFilters.optionMode);
+  panel.appendChild(optionModeField.field);
+
+  const setQualityField = makeSelectField('Prior set quality', [
+    { label: 'Any set quality', value: '' },
+    { label: 'Set quality 1', value: '1' },
+    { label: 'Set quality 2', value: '2' },
+    { label: 'Set quality 3', value: '3' },
+  ], activeFilters.setQuality);
+  panel.appendChild(setQualityField.field);
+
+  const actions = document.createElement('div');
+  actions.className = 'history-filter-actions';
+  actions.appendChild(makeButton('Clear Context Filters', 'secondary-btn', () => onChange({
+    ...DEFAULT_STAT_RANKING_CONTEXT_FILTERS,
+  })));
+  panel.appendChild(actions);
+
+  const collectFilters = () => onChange({
+    attackType: attackTypeField.select.value,
+    optionMode: optionModeField.select.value,
+    setQuality: setQualityField.select.value,
+  });
+  for (const select of [attackTypeField.select, optionModeField.select, setQualityField.select]) {
+    select.addEventListener('change', collectFilters);
+  }
+
+  return panel;
+}
+
 function getStatBreakdownDefinitions() {
   const definitions = [];
+  const statRankingLabelOverrides = {
+    totalKillsAces: 'Kills / Aces per Match',
+    totalErrors: 'Errors per Match',
+    totalPointsGained: 'Points Gained per Match',
+  };
   const pointsGainedKeys = new Set([
-    'servingPointsGained',
-    'sideoutPointsGained',
-    'transitionPointsGained',
-    'blockingPointsGained',
     'totalKillsAces',
     'totalErrors',
     'totalPointsGained',
@@ -3909,7 +4081,7 @@ function getStatBreakdownDefinitions() {
       definitions.push({
         id: `metric:${key}`,
         group: group.label,
-        label,
+        label: statRankingLabelOverrides[key] || label,
         formatter,
         format: key === 'ptPct'
           ? 'ratio'
@@ -3936,10 +4108,12 @@ function renderStatBreakdownSelector(
   title.textContent = titleText;
   panel.appendChild(title);
 
-  const hint = document.createElement('p');
-  hint.className = 'player-stats-meta';
-  hint.textContent = hintText;
-  panel.appendChild(hint);
+  if (hintText) {
+    const hint = document.createElement('p');
+    hint.className = 'player-stats-meta stat-breakdown-selector-hint';
+    hint.textContent = hintText;
+    panel.appendChild(hint);
+  }
 
   const options = document.createElement('div');
   options.className = 'stat-breakdown-options';
@@ -3994,17 +4168,31 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
   title.textContent = 'Roster Rankings';
   section.appendChild(title);
 
-  const description = document.createElement('p');
-  description.className = 'player-stats-meta';
-  description.textContent = 'Click a statistic heading to sort the roster by that column.';
-  section.appendChild(description);
-
   const table = document.createElement('table');
   table.className = 'stats-table stat-breakdown-table';
   const headerRow = document.createElement('tr');
   headerRow.appendChild(renderTableCell('Rank', 'th'));
   headerRow.appendChild(renderTableCell('Player', 'th'));
-  headerRow.appendChild(renderTableCell('Completed Sets', 'th'));
+  const completedSetsHeader = document.createElement('th');
+  const completedSetsSortButton = document.createElement('button');
+  completedSetsSortButton.type = 'button';
+  completedSetsSortButton.className = 'stat-breakdown-sort-btn';
+  const isCompletedSetsSort = sortId === 'completedSets';
+  const completedSetsArrow = isCompletedSetsSort
+    ? (sortDirection === 'asc' ? ' ↑' : ' ↓')
+    : '';
+  completedSetsSortButton.textContent = `Completed Sets${completedSetsArrow}`;
+  completedSetsSortButton.title = 'Sort by Completed Sets';
+  completedSetsSortButton.setAttribute('aria-label', 'Sort by Completed Sets');
+  completedSetsSortButton.setAttribute('aria-sort', isCompletedSetsSort
+    ? sortDirection === 'asc' ? 'ascending' : 'descending'
+    : 'none');
+  completedSetsSortButton.addEventListener('click', () => {
+    const nextDirection = isCompletedSetsSort && sortDirection === 'desc' ? 'asc' : 'desc';
+    onSort('completedSets', nextDirection);
+  });
+  completedSetsHeader.appendChild(completedSetsSortButton);
+  headerRow.appendChild(completedSetsHeader);
 
   for (const definition of definitions) {
     const headerCell = document.createElement('th');
@@ -4046,9 +4234,14 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
     return { min: Math.min(...values), max: Math.max(...values) };
   });
   const sortIndex = definitions.findIndex((definition) => definition.id === sortId);
+  const sortByCompletedSets = sortId === 'completedSets';
   rankingRows.sort((a, b) => {
-    const aValue = a.values[sortIndex];
-    const bValue = b.values[sortIndex];
+    const aValue = sortByCompletedSets
+      ? (a.row.setCount || a.row.gameCount)
+      : a.values[sortIndex];
+    const bValue = sortByCompletedSets
+      ? (b.row.setCount || b.row.gameCount)
+      : b.values[sortIndex];
     const aHasValue = (a.row.setCount || a.row.gameCount) > 0 && typeof aValue === 'number' && Number.isFinite(aValue);
     const bHasValue = (b.row.setCount || b.row.gameCount) > 0 && typeof bValue === 'number' && Number.isFinite(bValue);
     if (aHasValue !== bHasValue) return aHasValue ? -1 : 1;
@@ -4062,7 +4255,9 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
   let previousValue;
   let previousRank = 0;
   rankingRows.forEach(({ row, values }, index) => {
-    const value = values[sortIndex];
+    const value = sortByCompletedSets
+      ? (row.setCount || row.gameCount)
+      : values[sortIndex];
     const hasValue = (row.setCount || row.gameCount) > 0 && typeof value === 'number' && Number.isFinite(value);
     const rank = hasValue
       ? value === previousValue ? previousRank : index + 1
@@ -4101,7 +4296,14 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
   return section;
 }
 
-function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, sortId = null, sortDirection = 'desc', scope = 'match') {
+function renderStatBreakdownScreen(
+  selectedStatIds = null,
+  perGameStats = true,
+  sortId = null,
+  sortDirection = 'desc',
+  scope = 'match',
+  contextFilters = {},
+) {
   clearApp();
   appEl.appendChild(renderNavBar('statBreakdown'));
 
@@ -4115,11 +4317,18 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     : selectedStatIds.filter((id) => definitions.some((definition) => definition.id === id));
   const selectedIds = new Set(activeSelectedIds);
   const selectedDefinitions = definitions.filter((definition) => selectedIds.has(definition.id));
-  const activeSortId = selectedDefinitions.some((definition) => definition.id === sortId)
+  const activeSortId = sortId === 'completedSets'
+    || selectedDefinitions.some((definition) => definition.id === sortId)
     ? sortId
     : selectedDefinitions[0]?.id;
   const activeSortDirection = sortDirection === 'asc' ? 'asc' : 'desc';
-  const activeScope = normalizeStatsScope(scope);
+  // Stat Rankings always uses full-match totals; set-specific views are not
+  // exposed on this tab.
+  const activeScope = 'match';
+  const activeContextFilters = {
+    ...DEFAULT_STAT_RANKING_CONTEXT_FILTERS,
+    ...contextFilters,
+  };
 
   rememberActiveScreenParam('statBreakdown', {
     selectedStatIds: activeSelectedIds,
@@ -4127,6 +4336,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     sortId: activeSortId,
     sortDirection: activeSortDirection,
     scope: activeScope,
+    contextFilters: activeContextFilters,
   });
 
   const title = document.createElement('h1');
@@ -4134,12 +4344,6 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
   container.appendChild(title);
 
   const completedGames = loadGameHistory().filter((game) => game.isComplete);
-  const subtitle = document.createElement('p');
-  subtitle.className = 'empty-state';
-  const includedSetCount = completedGames.reduce((total, game) => total + getSetCountForScope(game, activeScope), 0);
-  subtitle.textContent = `${includedSetCount} completed set${includedSetCount === 1 ? '' : 's'} included. Paused matches and practice players are excluded.`;
-  container.appendChild(subtitle);
-
   const displayActions = document.createElement('div');
   displayActions.className = 'summary-actions stat-breakdown-display-actions';
   const totalToggle = document.createElement('label');
@@ -4153,6 +4357,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     activeSortId,
     activeSortDirection,
     activeScope,
+    activeContextFilters,
   ));
   totalToggle.appendChild(totalCheckbox);
   const totalText = document.createElement('span');
@@ -4161,25 +4366,26 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
   displayActions.appendChild(totalToggle);
   container.appendChild(displayActions);
 
-  const scopeField = document.createElement('label');
-  scopeField.className = 'history-filter-field stat-breakdown-scope-field';
-  scopeField.textContent = 'View';
-  const scopeSelect = document.createElement('select');
-  scopeSelect.appendChild(new Option('Full match', 'match'));
-  for (const setNumber of [1, 2, 3]) scopeSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
-  scopeSelect.value = String(activeScope);
-  scopeSelect.addEventListener('change', () => renderStatBreakdownScreen(
-    activeSelectedIds,
-    perGameStats,
-    activeSortId,
-    activeSortDirection,
-    scopeSelect.value,
-  ));
-  scopeField.appendChild(scopeSelect);
-  container.appendChild(scopeField);
-
   container.appendChild(renderStatBreakdownSelector(definitions, [...selectedIds], (nextSelectedIds) => {
-    renderStatBreakdownScreen(nextSelectedIds, perGameStats, activeSortId, activeSortDirection, activeScope);
+    renderStatBreakdownScreen(
+      nextSelectedIds,
+      perGameStats,
+      activeSortId,
+      activeSortDirection,
+      activeScope,
+      activeContextFilters,
+    );
+  }, '*** DISCLAIMER *** The stats selected below will not be related to each other in the table. For example, selecting Hard-Driven% and Attacking Eff% will not filter Attacking Eff% by hard driven attacks. In order to do this, instead use the filtering options below the statistic selection.', 'Choose Statistics'));
+
+  container.appendChild(renderStatRankingContextFilterPanel(activeContextFilters, (nextContextFilters) => {
+    renderStatBreakdownScreen(
+      activeSelectedIds,
+      perGameStats,
+      activeSortId,
+      activeSortDirection,
+      activeScope,
+      nextContextFilters,
+    );
   }));
 
   if (selectedIds.size === 0) {
@@ -4193,7 +4399,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
     empty.textContent = 'No completed games are available for ranking yet.';
     container.appendChild(empty);
   } else {
-    const rows = getPlayerStatsRows(completedGames, activeScope)
+    const rows = getPlayerStatsRows(completedGames, activeScope, activeContextFilters)
       .filter((row) => (row.setCount || row.gameCount) > 0)
       .filter((row) => !findPlayerById(row.playerId)?.practicePlayer);
     if (rows.length === 0) {
@@ -4214,6 +4420,7 @@ function renderStatBreakdownScreen(selectedStatIds = null, perGameStats = true, 
           nextSortId,
           nextSortDirection,
           activeScope,
+          activeContextFilters,
         ),
       ));
     }

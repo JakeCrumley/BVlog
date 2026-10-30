@@ -29,10 +29,12 @@ const SCREENS = {
       state.sortId || null,
       state.sortDirection || 'desc',
       state.scope || 'match',
+      state.contextFilters || {},
     ),
   statisticalBreakdowns: (state = {}) => renderStatisticalBreakdownsScreen(state),
   visualizations: (state = {}) => renderVisualizationsScreen(state),
   cloudSync:      () => renderCloudSyncScreen(),
+  deployNotes:    () => renderDeployNotesScreen(),
   editGameDetails: (gameId) => renderGameDetailsEditScreen(gameId),
   editPointInput: (state = {}) => renderPointInputEditScreen(state),
   gameSummary:    (state) => renderGameSummaryScreen(

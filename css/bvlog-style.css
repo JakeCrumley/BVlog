@@ -148,6 +148,45 @@ button:focus:not(:focus-visible) > * {
   line-height: 1.3;
 }
 
+.deploy-notes-list {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.deploy-note-card {
+  padding: 16px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1e293b;
+  text-align: left;
+}
+
+.deploy-note-card h2 {
+  margin: 0;
+  color: #e2e8f0;
+  font-size: 1.05rem;
+}
+
+.deploy-note-card p {
+  margin: 8px 0 0;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.deploy-note-card ul {
+  margin: 10px 0 0;
+  padding-left: 22px;
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.deploy-note-card .deploy-note-date {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
 h1 {
   font-size: 1.5rem;
   margin-bottom: 16px;
@@ -1122,6 +1161,14 @@ h1 {
   font-size: 1.1rem;
 }
 
+.stat-breakdown-selector-hint {
+  max-width: 100%;
+  margin-top: 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
 .stat-breakdown-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1237,6 +1284,20 @@ h1 {
   background: #0f172a;
   border: 1px solid #334155;
   border-radius: 8px;
+}
+
+.stat-ranking-context-filter-panel h2,
+.stat-ranking-context-filter-panel > p,
+.stat-ranking-context-filter-panel .history-filter-actions {
+  grid-column: 1 / -1;
+}
+
+.stat-ranking-context-filter-panel h2 {
+  margin: 0;
+}
+
+.stat-ranking-context-filter-panel > p {
+  margin: 0;
 }
 
 .history-filter-field {

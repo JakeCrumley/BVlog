@@ -41,6 +41,7 @@ const SCREENS = {
     state && typeof state === 'object' ? state.gameId : state,
     state && typeof state === 'object' ? state.scope : 'match',
     state && typeof state === 'object' ? state.restoreScroll : null,
+    state && typeof state === 'object' ? state.confirmationMessage : '',
   ),
 };
 

@@ -12,6 +12,19 @@
 const appEl = document.getElementById('app');
 let pointEditContext = null;
 const liveStatsScopeByGameId = new Map();
+// UI-only preference for the left/right order of live-game player buttons.
+// The stored event sides remain A/B, so swapping this order never changes
+// which player receives an action or how stats are calculated.
+const liveButtonOrderByGameId = new Map();
+
+function getLiveButtonOrder(gameId) {
+  return liveButtonOrderByGameId.get(gameId) || ['A', 'B'];
+}
+
+function swapLiveButtonSides(gameId) {
+  const currentOrder = getLiveButtonOrder(gameId);
+  liveButtonOrderByGameId.set(gameId, [currentOrder[1], currentOrder[0]]);
+}
 
 function getDocumentScrollPosition() {
   return {
@@ -181,6 +194,21 @@ function renderHomeScreen() {
 // Add new entries at the beginning so the newest deployment is shown first.
 // Keep these notes hard-coded here until deployment-note editing is added.
 const DEPLOY_NOTES = [
+  {
+    title: 'Deployed 11/4/2026',
+    items: [
+      'Added a Swap Sides button for in-game logging',
+      'Expanded undo functionality to include starting possession',
+      'Added a “Logged by” prompt in game setup and displayed it in History game boxes',
+      'Changed percentage statistics to decimal format (23% → .23)',
+      'Set counting statistics to default to a per-set basis',
+      'Corrected comparison highlighting for statistics where lower values are better',
+      'Added confirmation messages after saving notes and editing inputs',
+      'Beta — Export stat views as PDFs',
+      'Separated “Opponent” in game setup into “Opponent Team” and “Opponent Pair”',
+      'Updated filtering to account for both opponent team and opponent pair',
+    ],
+  },
   {
     title: 'Deployed 10/30/2026',
     items: [
@@ -688,13 +716,27 @@ function renderGameSetupScreen() {
   // Default to two different players when possible.
   if (roster.length > 1) selectB.selectedIndex = 1;
 
-  // --- Opponent name ---
-  const fieldOpp = document.createElement('label');
-  fieldOpp.textContent = 'Opponent Name';
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'text';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  fieldOpp.appendChild(opponentInput);
+  const fieldOpponentTeam = document.createElement('label');
+  fieldOpponentTeam.textContent = 'Opponent Team';
+  const opponentTeamInput = document.createElement('input');
+  opponentTeamInput.type = 'text';
+  opponentTeamInput.required = true;
+  fieldOpponentTeam.appendChild(opponentTeamInput);
+
+  const fieldOpponentPair = document.createElement('label');
+  fieldOpponentPair.textContent = 'Opponent Pair';
+  const opponentPairInput = document.createElement('input');
+  opponentPairInput.type = 'text';
+  opponentPairInput.required = true;
+  fieldOpponentPair.appendChild(opponentPairInput);
+
+  // --- Person entering the match ---
+  const fieldLoggedBy = document.createElement('label');
+  fieldLoggedBy.textContent = 'Logged by';
+  const loggedByInput = document.createElement('input');
+  loggedByInput.type = 'text';
+  loggedByInput.required = true;
+  fieldLoggedBy.appendChild(loggedByInput);
 
   // --- Date the match was actually played ---
   const fieldPlayedDate = document.createElement('label');
@@ -715,7 +757,9 @@ function renderGameSetupScreen() {
 
   form.appendChild(fieldA);
   form.appendChild(fieldB);
-  form.appendChild(fieldOpp);
+  form.appendChild(fieldOpponentTeam);
+  form.appendChild(fieldOpponentPair);
+  form.appendChild(fieldLoggedBy);
   form.appendChild(fieldPlayedDate);
   form.appendChild(errorMsg);
   form.appendChild(submitBtn);
@@ -725,7 +769,9 @@ function renderGameSetupScreen() {
 
     const playerAId = selectA.value;
     const playerBId = selectB.value;
-    const opponentName = opponentInput.value.trim();
+    const opponentTeam = opponentTeamInput.value.trim();
+    const opponentPair = opponentPairInput.value.trim();
+    const loggedBy = loggedByInput.value.trim();
     const playedDate = playedDateInput.value;
 
     if (playerAId === playerBId) {
@@ -733,8 +779,18 @@ function renderGameSetupScreen() {
       errorMsg.hidden = false;
       return;
     }
-    if (!opponentName) {
-      errorMsg.textContent = 'Enter an opponent name.';
+    if (!opponentTeam) {
+      errorMsg.textContent = 'Enter an opponent team.';
+      errorMsg.hidden = false;
+      return;
+    }
+    if (!opponentPair) {
+      errorMsg.textContent = 'Enter an opponent pair.';
+      errorMsg.hidden = false;
+      return;
+    }
+    if (!loggedBy) {
+      errorMsg.textContent = 'Enter the name of the person logging the game.';
       errorMsg.hidden = false;
       return;
     }
@@ -746,7 +802,14 @@ function renderGameSetupScreen() {
     errorMsg.hidden = true;
     // Game isn't created yet — startingAction is picked on the next
     // screen. Pass the rest of the setup along with it.
-    navigate('startingAction', { playerAId, playerBId, opponentName, playedDate });
+    navigate('startingAction', {
+      playerAId,
+      playerBId,
+      opponentTeam,
+      opponentPair,
+      loggedBy,
+      playedDate,
+    });
   });
 
   container.appendChild(form);
@@ -780,6 +843,15 @@ function renderStartingActionScreen(setupData) {
   buttonRow.className = 'starting-action-buttons';
 
   const startGame = (startingAction) => {
+    if (setupData?.gameId) {
+      if (!updateGameStartingAction(setupData.gameId, startingAction)) {
+        alert('Could not update the starting action — try again.');
+        return;
+      }
+      navigate('liveGame', setupData.gameId);
+      return;
+    }
+
     const game = createGame({ ...setupData, startingAction });
     if (!saveGame(game)) {
       alert('Could not save the new game — try again.');
@@ -1014,7 +1086,7 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
 
   const matchupLine = document.createElement('div');
   matchupLine.className = 'matchup-line';
-  matchupLine.textContent = `${nameA} & ${nameB} vs. ${game.opponentName} · Set ${displaySetNumber} of 3`;
+  matchupLine.textContent = `${nameA} & ${nameB} vs. ${opponentDisplayName(game)} · Set ${displaySetNumber} of 3`;
   header.appendChild(matchupLine);
 
   if (editContext) {
@@ -1040,6 +1112,8 @@ function renderLiveTrackingScreen(gameId, scoreChange = null) {
     const columns = document.createElement('div');
     columns.className = 'tracking-columns';
     const visiblePlayers = getVisiblePlayers(phase, rallyState);
+    const buttonOrder = getLiveButtonOrder(gameId);
+    visiblePlayers.sort((left, right) => buttonOrder.indexOf(left) - buttonOrder.indexOf(right));
     if (visiblePlayers.length === 1) columns.classList.add('single-column');
 
     const actionKeys = Object.keys(phaseConfig.actions)
@@ -1185,6 +1259,14 @@ function renderTrackingControls(gameId, options = {}) {
   const game = getWorkingGame(gameId);
   const editContext = getPointEditContext(gameId);
   const rallyState = game ? deriveRallyState(game) : null;
+  const canUndoOpeningAction = Boolean(
+    game
+    && !onUndo
+    && !editContext
+    && !game.isComplete
+    && getCurrentSetNumber(game) === 1
+    && (game.events || []).length === 0,
+  );
   const controls = document.createElement('div');
   controls.className = 'tracking-controls';
 
@@ -1196,7 +1278,7 @@ function renderTrackingControls(gameId, options = {}) {
     ? false
     : editContext
     ? editContext.replacementEvents.length === 0
-    : !game || game.events.length === 0;
+    : !game || ((game.events || []).length === 0 && !canUndoOpeningAction);
   undoBtn.addEventListener('click', () => {
     if (onUndo) {
       onUndo();
@@ -1207,12 +1289,33 @@ function renderTrackingControls(gameId, options = {}) {
       renderLiveTrackingScreen(gameId);
       return;
     }
+    if (canUndoOpeningAction) {
+      navigate('startingAction', {
+        gameId,
+        playerAId: game.playerAId,
+        playerBId: game.playerBId,
+        opponentName: game.opponentName,
+        opponentTeam: game.opponentTeam,
+        opponentPair: game.opponentPair,
+        playedDate: game.playedDate,
+      });
+      return;
+    }
     const currentGame = getGameById(gameId);
-    if (!currentGame || currentGame.events.length === 0) return;
+    if (!currentGame || (currentGame.events || []).length === 0) return;
     undoLastEvent(currentGame);
     saveGame(currentGame);
     renderLiveTrackingScreen(gameId);
   });
+
+  let swapSidesBtn = null;
+  if (!onUndo) {
+    swapSidesBtn = makeButton('Swap Player Sides', 'swap-player-sides-btn secondary-btn', () => {
+      swapLiveButtonSides(gameId);
+      renderLiveTrackingScreen(gameId);
+    });
+    swapSidesBtn.title = 'Swap the left and right player button columns. This does not change stats.';
+  }
 
   if (editContext) {
     const cancelBtn = document.createElement('button');
@@ -1225,6 +1328,7 @@ function renderTrackingControls(gameId, options = {}) {
       navigateToSummary(gameId, summaryReturn);
     });
     controls.appendChild(undoBtn);
+    if (swapSidesBtn) controls.appendChild(swapSidesBtn);
     controls.appendChild(cancelBtn);
     return controls;
   }
@@ -1260,6 +1364,7 @@ function renderTrackingControls(gameId, options = {}) {
   endSetBtn.addEventListener('click', () => renderSetCompletionScreen(gameId));
 
   controls.appendChild(undoBtn);
+  if (swapSidesBtn) controls.appendChild(swapSidesBtn);
   // Once the first serve has established the rotation, allow a coach to
   // correct the server if the players were entered in the wrong order.
   if (game && rallyState?.phase === PHASES.SERVE && rallyState.servingPlayer) {
@@ -1690,7 +1795,9 @@ function statsEventsForScope(game, scope = 'match') {
 }
 
 function formatPercent(value) {
-  return value === null || value === undefined ? '—' : `${(value * 100).toFixed(1)}%`;
+  // Percentage metrics are stored as ratios from 0 to 1. Display the ratio
+  // directly so 75% is shown as 0.75, without changing the calculation.
+  return value === null || value === undefined ? '—' : Number(value).toFixed(2);
 }
 
 function formatStatNumber(value) {
@@ -1699,12 +1806,84 @@ function formatStatNumber(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+const NEW_OPPONENT_OPTION = '__new_opponent__';
+
+function opponentTeamForGame(game) {
+  return String(game?.opponentTeam || '').trim();
+}
+
+function opponentPairForGame(game) {
+  return String(game?.opponentPair || game?.opponentName || '').trim();
+}
+
+function opponentDisplayName(game) {
+  const team = opponentTeamForGame(game);
+  const pair = opponentPairForGame(game);
+  return [team, pair].filter(Boolean).join(' — ') || 'Unknown opponent';
+}
+
+function opponentOptionValues(games, field) {
+  const values = new Map();
+  for (const game of games || []) {
+    const value = field === 'team' ? opponentTeamForGame(game) : opponentPairForGame(game);
+    const key = value.toLocaleLowerCase();
+    if (value && !values.has(key)) values.set(key, value);
+  }
+  return [...values.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function makeOpponentSelectField(labelText, values, currentValue = '', allowNew = false) {
+  const field = document.createElement('label');
+  field.className = 'history-filter-field';
+  field.textContent = labelText;
+
+  const select = document.createElement('select');
+  select.appendChild(new Option(`Select ${labelText}`, ''));
+  for (const value of values) select.appendChild(new Option(value, value));
+  if (allowNew) select.appendChild(new Option('Add new…', NEW_OPPONENT_OPTION));
+  select.value = currentValue || '';
+
+  if (allowNew) {
+    select.addEventListener('change', () => {
+      if (select.value !== NEW_OPPONENT_OPTION) return;
+      const entered = window.prompt(`Enter ${labelText.toLocaleLowerCase()}:`, '');
+      const value = String(entered || '').trim();
+      if (!value) {
+        select.value = currentValue || '';
+        return;
+      }
+      const existing = [...select.options].find((option) =>
+        option.value.toLocaleLowerCase() === value.toLocaleLowerCase(),
+      );
+      if (existing) select.value = existing.value;
+      else {
+        select.insertBefore(new Option(value, value), select.options[select.options.length - 1]);
+        select.value = value;
+      }
+    });
+  }
+
+  field.appendChild(select);
+  return { field, select };
+}
+
 function makeButton(label, className, onClick) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = className;
   button.textContent = label;
   button.addEventListener('click', onClick);
+  return button;
+}
+
+function makePdfExportButton() {
+  const button = makeButton('Export PDF', 'secondary-btn pdf-export-control', () => {
+    const restorePrintMode = () => document.body.classList.remove('pdf-export-mode');
+    document.body.classList.add('pdf-export-mode');
+    window.addEventListener('afterprint', restorePrintMode, { once: true });
+    window.print();
+  });
+  button.title = 'Open the print dialog to save this view as a PDF.';
   return button;
 }
 
@@ -1736,7 +1915,7 @@ function gameExportBaseName(game) {
   const datePart = /^\d{4}-\d{2}-\d{2}$/.test(String(playedDateForGame(game)))
     ? playedDateForGame(game)
     : new Date(playedDateForGame(game)).toISOString().slice(0, 10);
-  return `bvlog-${datePart}-${safeFilePart(game.opponentName)}`;
+  return `bvlog-${datePart}-${safeFilePart(opponentDisplayName(game))}`;
 }
 
 function exportFullBackup() {
@@ -1795,7 +1974,9 @@ function exportGameCsv(gameId) {
     ['Game ID', game.id],
     ['Player A', playerNameForGame(game, 'A')],
     ['Player B', playerNameForGame(game, 'B')],
-    ['Opponent', game.opponentName],
+    ['Opponent Team', opponentTeamForGame(game)],
+    ['Opponent Pair', opponentPairForGame(game)],
+    ['Logged By', game.loggedBy || ''],
     ['Played Date', playedDateForGame(game)],
     ['Logged At', game.date],
     ['Sets', getCompletedSetNumbers(game).join(', ') || getCurrentSetNumber(game)],
@@ -1962,11 +2143,18 @@ function normalizeImportedGame(game) {
       ? String(game.date).slice(0, 10)
       : getLocalDateInputValue();
 
+  const opponentTeam = String(game.opponentTeam || '').trim();
+  const opponentPair = String(game.opponentPair || game.opponentName || '').trim();
+
   return {
     ...game,
     id: game.id || crypto.randomUUID(),
     date: game.date || new Date().toISOString(),
     playedDate,
+    opponentTeam,
+    opponentPair,
+    opponentName: [opponentTeam, opponentPair].filter(Boolean).join(' — '),
+    loggedBy: game.loggedBy == null ? '' : String(game.loggedBy),
     setNumber: 1,
     currentSetNumber: getCurrentSetNumber(game),
     completedSetNumbers: getCompletedSetNumbers(game),
@@ -2155,12 +2343,18 @@ function importCsvBackupText(text) {
     id: metadata.get('Game ID') || crypto.randomUUID(),
     date: metadata.get('Logged At') || new Date().toISOString(),
     playedDate: metadata.get('Played Date') || getLocalDateInputValue(),
+    loggedBy: metadata.get('Logged By') || '',
     setNumber: 1,
     currentSetNumber: 1,
     completedSetNumbers: [],
     playerAId: playerA.id,
     playerBId: playerB.id,
-    opponentName: metadata.get('Opponent') || 'Imported Opponent',
+    opponentTeam: metadata.get('Opponent Team') || '',
+    opponentPair: metadata.get('Opponent Pair') || metadata.get('Opponent') || 'Imported Opponent',
+    opponentName: [
+      metadata.get('Opponent Team') || '',
+      metadata.get('Opponent Pair') || metadata.get('Opponent') || 'Imported Opponent',
+    ].filter(Boolean).join(' — '),
     startingAction: metadata.get('Starting Action') === 'receive' ? 'receive' : 'serve',
     setStartingActions: {
       1: metadata.get('Starting Action') === 'receive' ? 'receive' : 'serve',
@@ -2499,7 +2693,13 @@ function renderPointInputEditScreen(state = {}) {
       errorMsg.hidden = false;
       return;
     }
-    navigateToSummary(gameId, state.returnToSummary);
+    const returnState = state.returnToSummary || {};
+    navigate('gameSummary', {
+      gameId,
+      scope: returnState.scope || 'match',
+      restoreScroll: returnState.restoreScroll || null,
+      confirmationMessage: 'Input saved.',
+    });
   });
 
   container.appendChild(form);
@@ -2573,12 +2773,26 @@ function renderGameDetailsEditScreen(gameId) {
   addPlayerOptions(selectA, game.playerAId, 'A');
   addPlayerOptions(selectB, game.playerBId, 'B');
 
-  const fieldOpp = document.createElement('label');
-  fieldOpp.textContent = 'Opponent Name';
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'text';
-  opponentInput.value = game.opponentName || '';
-  fieldOpp.appendChild(opponentInput);
+  const editOpponentGames = loadGameHistory();
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(editOpponentGames, 'team'),
+    opponentTeamForGame(game),
+    true,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(editOpponentGames, 'pair'),
+    opponentPairForGame(game),
+    true,
+  );
+
+  const fieldLoggedBy = document.createElement('label');
+  fieldLoggedBy.textContent = 'Logged by';
+  const loggedByInput = document.createElement('input');
+  loggedByInput.type = 'text';
+  loggedByInput.value = game.loggedBy || '';
+  fieldLoggedBy.appendChild(loggedByInput);
 
   const fieldPlayedDate = document.createElement('label');
   fieldPlayedDate.textContent = 'Match Date';
@@ -2609,7 +2823,9 @@ function renderGameDetailsEditScreen(gameId) {
 
   form.appendChild(fieldA);
   form.appendChild(fieldB);
-  form.appendChild(fieldOpp);
+  form.appendChild(opponentTeamField.field);
+  form.appendChild(opponentPairField.field);
+  form.appendChild(fieldLoggedBy);
   form.appendChild(fieldPlayedDate);
   form.appendChild(fieldStartingAction);
   form.appendChild(errorMsg);
@@ -2620,7 +2836,9 @@ function renderGameDetailsEditScreen(gameId) {
     const details = {
       playerAId: selectA.value,
       playerBId: selectB.value,
-      opponentName: opponentInput.value.trim(),
+      opponentTeam: opponentTeamField.select.value.trim(),
+      opponentPair: opponentPairField.select.value.trim(),
+      loggedBy: loggedByInput.value.trim(),
       playedDate: playedDateInput.value,
       startingAction: startingActionSelect.value,
     };
@@ -2630,8 +2848,13 @@ function renderGameDetailsEditScreen(gameId) {
       errorMsg.hidden = false;
       return;
     }
-    if (!details.opponentName) {
-      errorMsg.textContent = 'Enter an opponent name.';
+    if (!details.opponentTeam || details.opponentTeam === NEW_OPPONENT_OPTION) {
+      errorMsg.textContent = 'Choose an opponent team.';
+      errorMsg.hidden = false;
+      return;
+    }
+    if (!details.opponentPair || details.opponentPair === NEW_OPPONENT_OPTION) {
+      errorMsg.textContent = 'Choose an opponent pair.';
       errorMsg.hidden = false;
       return;
     }
@@ -2708,11 +2931,18 @@ function renderHistoryScreen() {
     playerSelect.appendChild(new Option(label, player.id));
   }
 
-  const opponentInput = document.createElement('input');
-  opponentInput.id = 'history-opponent-filter';
-  opponentInput.type = 'search';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  opponentInput.setAttribute('aria-label', 'Filter by opponent');
+  const historyOpponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(allGames, 'team'),
+  );
+  historyOpponentTeamField.select.id = 'history-opponent-team-filter';
+  historyOpponentTeamField.select.setAttribute('aria-label', 'Filter by opponent team');
+  const historyOpponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(allGames, 'pair'),
+  );
+  historyOpponentPairField.select.id = 'history-opponent-pair-filter';
+  historyOpponentPairField.select.setAttribute('aria-label', 'Filter by opponent pair');
 
   const fromDateInput = document.createElement('input');
   fromDateInput.id = 'history-date-from';
@@ -2731,12 +2961,6 @@ function renderHistoryScreen() {
     setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
   }
 
-  const statusSelect = document.createElement('select');
-  statusSelect.id = 'history-status-filter';
-  statusSelect.appendChild(new Option('Any status', ''));
-  statusSelect.appendChild(new Option('Completed', 'completed'));
-  statusSelect.appendChild(new Option('Paused', 'paused'));
-
   const resultSelect = document.createElement('select');
   resultSelect.id = 'history-result-filter';
   resultSelect.appendChild(new Option('Any result', ''));
@@ -2744,22 +2968,22 @@ function renderHistoryScreen() {
   resultSelect.appendChild(new Option('Losses', 'loss'));
 
   filters.appendChild(makeFilterField('Player', playerSelect));
-  filters.appendChild(makeFilterField('Opponent', opponentInput));
+  filters.appendChild(historyOpponentTeamField.field);
+  filters.appendChild(historyOpponentPairField.field);
   filters.appendChild(makeFilterField('Played from', fromDateInput));
   filters.appendChild(makeFilterField('Played through', toDateInput));
   filters.appendChild(makeFilterField('View', setSelect));
-  filters.appendChild(makeFilterField('Status', statusSelect));
   filters.appendChild(makeFilterField('Result', resultSelect));
 
   const filterActions = document.createElement('div');
   filterActions.className = 'history-filter-actions';
   const clearFiltersButton = makeButton('Clear Filters', 'secondary-btn', () => {
     playerSelect.value = '';
-    opponentInput.value = '';
+    historyOpponentTeamField.select.value = '';
+    historyOpponentPairField.select.value = '';
     fromDateInput.value = '';
     toDateInput.value = '';
     setSelect.value = 'match';
-    statusSelect.value = '';
     resultSelect.value = '';
     renderResults();
   });
@@ -2775,23 +2999,22 @@ function renderHistoryScreen() {
   const renderResults = () => {
     results.innerHTML = '';
     const selectedPlayerId = playerSelect.value;
-    const opponentQuery = opponentInput.value.trim().toLocaleLowerCase();
+    const selectedOpponentTeam = historyOpponentTeamField.select.value.toLocaleLowerCase();
+    const selectedOpponentPair = historyOpponentPairField.select.value.toLocaleLowerCase();
     const startDate = fromDateInput.value;
     const endDate = toDateInput.value;
     const selectedSet = setSelect.value;
-    const selectedStatus = statusSelect.value;
     const selectedResult = resultSelect.value;
 
     const matches = (game) => {
       const playedDate = dateInputValueForGame(game);
 
       if (selectedPlayerId && game.playerAId !== selectedPlayerId && game.playerBId !== selectedPlayerId) return false;
-      if (opponentQuery && !String(game.opponentName || '').toLocaleLowerCase().includes(opponentQuery)) return false;
+      if (selectedOpponentTeam && opponentTeamForGame(game).toLocaleLowerCase() !== selectedOpponentTeam) return false;
+      if (selectedOpponentPair && opponentPairForGame(game).toLocaleLowerCase() !== selectedOpponentPair) return false;
       if (startDate && playedDate < startDate) return false;
       if (endDate && playedDate > endDate) return false;
       if (!gameHasSet(game, selectedSet)) return false;
-      if (selectedStatus && getGameStatus(game) !== selectedStatus) return false;
-
       if (selectedResult) {
         if (!game.isComplete) return false;
         const score = computeScore(game, selectedSet);
@@ -2828,7 +3051,15 @@ function renderHistoryScreen() {
     }
   };
 
-  for (const control of [playerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [
+    playerSelect,
+    historyOpponentTeamField.select,
+    historyOpponentPairField.select,
+    fromDateInput,
+    toDateInput,
+    setSelect,
+    resultSelect,
+  ]) {
     control.disabled = allGames.length === 0;
     control.addEventListener('input', renderResults);
     control.addEventListener('change', renderResults);
@@ -2918,7 +3149,7 @@ function renderMatchCard(game, completed, scope = 'match') {
 
   const meta = document.createElement('p');
   meta.className = 'match-card-meta';
-  meta.textContent = `${game.opponentName} · Logged ${formatGameDate(game.date)}`;
+  meta.textContent = `${opponentDisplayName(game)} · Logged by ${game.loggedBy || 'Unknown'} · ${formatGameDate(game.date)}`;
 
   const footer = document.createElement('div');
   footer.className = 'match-card-footer';
@@ -2962,7 +3193,7 @@ function renderMatchCard(game, completed, scope = 'match') {
     actions.appendChild(makeButton('View Summary', 'secondary-btn', () => navigate('gameSummary', game.id)));
   }
   actions.appendChild(makeButton('Delete', 'delete-btn', () => {
-    const confirmed = confirm(`Delete this game against ${game.opponentName}? This cannot be undone.`);
+    const confirmed = confirm(`Delete this game against ${opponentDisplayName(game)}? This cannot be undone.`);
     if (!confirmed) return;
     if (!deleteGame(game.id)) {
       alert('Could not delete that game — try again.');
@@ -2978,11 +3209,11 @@ function renderMatchCard(game, completed, scope = 'match') {
 const DEFAULT_PLAYER_STATS_FILTERS = {
   playerId: '',
   partnerId: '',
-  opponent: '',
+  opponentTeam: '',
+  opponentPair: '',
   fromDate: '',
   toDate: '',
   setNumber: 'match',
-  status: 'completed',
   result: '',
 };
 
@@ -2994,14 +3225,15 @@ function filterGamesForPlayerStats(games, playerId, filters) {
 
     const partnerId = isPlayerA ? game.playerBId : game.playerAId;
     const playedDate = dateInputValueForGame(game);
-    const opponent = String(game.opponentName || '').toLocaleLowerCase();
-
     if (filters.partnerId && partnerId !== filters.partnerId) return false;
-    if (filters.opponent && !opponent.includes(filters.opponent.toLocaleLowerCase())) return false;
+    if (!game.isComplete) return false;
+    if (filters.opponentTeam
+      && opponentTeamForGame(game).toLocaleLowerCase() !== filters.opponentTeam.toLocaleLowerCase()) return false;
+    if (filters.opponentPair
+      && opponentPairForGame(game).toLocaleLowerCase() !== filters.opponentPair.toLocaleLowerCase()) return false;
     if (filters.fromDate && playedDate < filters.fromDate) return false;
     if (filters.toDate && playedDate > filters.toDate) return false;
     if (!gameHasSet(game, filters.setNumber)) return false;
-    if (filters.status && getGameStatus(game) !== filters.status) return false;
 
     if (filters.result) {
       if (!game.isComplete) return false;
@@ -3049,11 +3281,17 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
   }
   partnerSelect.value = filters.partnerId;
 
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'search';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  opponentInput.value = filters.opponent;
-  opponentInput.setAttribute('aria-label', 'Filter player stats by opponent');
+  const opponentGames = loadGameHistory();
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(opponentGames, 'team'),
+    filters.opponentTeam,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(opponentGames, 'pair'),
+    filters.opponentPair,
+  );
 
   const fromDateInput = document.createElement('input');
   fromDateInput.type = 'date';
@@ -3072,12 +3310,6 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
   }
   setSelect.value = filters.setNumber || 'match';
 
-  const statusSelect = document.createElement('select');
-  statusSelect.appendChild(new Option('Completed only', 'completed'));
-  statusSelect.appendChild(new Option('Any status', ''));
-  statusSelect.appendChild(new Option('Paused', 'paused'));
-  statusSelect.value = filters.status;
-
   const resultSelect = document.createElement('select');
   resultSelect.appendChild(new Option('Any result', ''));
   resultSelect.appendChild(new Option('Wins', 'win'));
@@ -3086,11 +3318,11 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
 
   panel.appendChild(makeField('Player', playerSelect));
   panel.appendChild(makeField('Partner', partnerSelect));
-  panel.appendChild(makeField('Opponent', opponentInput));
+  panel.appendChild(opponentTeamField.field);
+  panel.appendChild(opponentPairField.field);
   panel.appendChild(makeField('Played from', fromDateInput));
   panel.appendChild(makeField('Played through', toDateInput));
   panel.appendChild(makeField('View', setSelect));
-  panel.appendChild(makeField('Status', statusSelect));
   panel.appendChild(makeField('Result', resultSelect));
 
   const actions = document.createElement('div');
@@ -3104,11 +3336,11 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
   const collectFilters = () => onChange({
     playerId: playerSelect.value,
     partnerId: partnerSelect.value,
-    opponent: opponentInput.value.trim(),
+    opponentTeam: opponentTeamField.select.value,
+    opponentPair: opponentPairField.select.value,
     fromDate: fromDateInput.value,
     toDate: toDateInput.value,
     setNumber: setSelect.value,
-    status: statusSelect.value,
     result: resultSelect.value,
   });
 
@@ -3117,7 +3349,7 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
     playerId: playerSelect.value,
     partnerId: '',
   }));
-  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [partnerSelect, opponentTeamField.select, opponentPairField.select, fromDateInput, toDateInput, setSelect, resultSelect]) {
     control.addEventListener('input', collectFilters);
     control.addEventListener('change', collectFilters);
   }
@@ -3127,11 +3359,11 @@ function renderPlayerStatsFilterPanel(selectedPlayerId, filters, onChange) {
 const DEFAULT_TEAM_STATS_FILTERS = {
   playerId: '',
   partnerId: '',
-  opponent: '',
+  opponentTeam: '',
+  opponentPair: '',
   fromDate: '',
   toDate: '',
   setNumber: 'match',
-  status: 'completed',
   result: '',
 };
 
@@ -3148,13 +3380,15 @@ function filterGamesForTeamStats(games, filters) {
       if (!hasPairing) return false;
     }
 
+    if (!game.isComplete) return false;
     const playedDate = dateInputValueForGame(game);
-    const opponent = String(game.opponentName || '').toLocaleLowerCase();
-    if (filters.opponent && !opponent.includes(filters.opponent.toLocaleLowerCase())) return false;
+    if (filters.opponentTeam
+      && opponentTeamForGame(game).toLocaleLowerCase() !== filters.opponentTeam.toLocaleLowerCase()) return false;
+    if (filters.opponentPair
+      && opponentPairForGame(game).toLocaleLowerCase() !== filters.opponentPair.toLocaleLowerCase()) return false;
     if (filters.fromDate && playedDate < filters.fromDate) return false;
     if (filters.toDate && playedDate > filters.toDate) return false;
     if (!gameHasSet(game, filters.setNumber)) return false;
-    if (filters.status && getGameStatus(game) !== filters.status) return false;
 
     if (filters.result) {
       if (!game.isComplete) return false;
@@ -3206,11 +3440,17 @@ function renderTeamStatsFilterPanel(filters, onChange) {
   partnerSelect.value = filters.partnerId;
   partnerSelect.disabled = !filters.playerId;
 
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'search';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  opponentInput.value = filters.opponent;
-  opponentInput.setAttribute('aria-label', 'Filter team stats by opponent');
+  const opponentGames = loadGameHistory();
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(opponentGames, 'team'),
+    filters.opponentTeam,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(opponentGames, 'pair'),
+    filters.opponentPair,
+  );
 
   const fromDateInput = document.createElement('input');
   fromDateInput.type = 'date';
@@ -3227,12 +3467,6 @@ function renderTeamStatsFilterPanel(filters, onChange) {
   for (const setNumber of [1, 2, 3]) setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
   setSelect.value = filters.setNumber || 'match';
 
-  const statusSelect = document.createElement('select');
-  statusSelect.appendChild(new Option('Completed only', 'completed'));
-  statusSelect.appendChild(new Option('Any status', ''));
-  statusSelect.appendChild(new Option('Paused', 'paused'));
-  statusSelect.value = filters.status;
-
   const resultSelect = document.createElement('select');
   resultSelect.appendChild(new Option('Any result', ''));
   resultSelect.appendChild(new Option('Wins', 'win'));
@@ -3241,11 +3475,11 @@ function renderTeamStatsFilterPanel(filters, onChange) {
 
   panel.appendChild(makeField('Player', playerSelect));
   panel.appendChild(makeField('Partner', partnerSelect));
-  panel.appendChild(makeField('Opponent', opponentInput));
+  panel.appendChild(opponentTeamField.field);
+  panel.appendChild(opponentPairField.field);
   panel.appendChild(makeField('Played from', fromDateInput));
   panel.appendChild(makeField('Played through', toDateInput));
   panel.appendChild(makeField('View', setSelect));
-  panel.appendChild(makeField('Status', statusSelect));
   panel.appendChild(makeField('Result', resultSelect));
 
   const actions = document.createElement('div');
@@ -3256,11 +3490,11 @@ function renderTeamStatsFilterPanel(filters, onChange) {
   const collectFilters = () => onChange({
     playerId: playerSelect.value,
     partnerId: partnerSelect.value,
-    opponent: opponentInput.value.trim(),
+    opponentTeam: opponentTeamField.select.value,
+    opponentPair: opponentPairField.select.value,
     fromDate: fromDateInput.value,
     toDate: toDateInput.value,
     setNumber: setSelect.value,
-    status: statusSelect.value,
     result: resultSelect.value,
   });
 
@@ -3269,7 +3503,7 @@ function renderTeamStatsFilterPanel(filters, onChange) {
     playerId: playerSelect.value,
     partnerId: '',
   }));
-  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [partnerSelect, opponentTeamField.select, opponentPairField.select, fromDateInput, toDateInput, setSelect, resultSelect]) {
     control.addEventListener('input', collectFilters);
     control.addEventListener('change', collectFilters);
   }
@@ -3330,6 +3564,7 @@ function renderTeamStatsScreen(perGameStats = true, filters = {}) {
   totalText.textContent = 'Total Stats';
   totalToggle.appendChild(totalText);
   actions.appendChild(totalToggle);
+  actions.appendChild(makePdfExportButton());
   container.appendChild(actions);
 
   if (completedGames.length === 0) {
@@ -3403,6 +3638,7 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
     actions.appendChild(makeButton('Back to Player Stats', 'secondary-btn', () => renderPlayerStatsScreen()));
     actions.appendChild(makeButton('Export JSON', 'secondary-btn', () => exportPlayerStatsJson(selectedRow.playerId)));
     actions.appendChild(makeButton('Export CSV', 'secondary-btn', () => exportPlayerStatsCsv(selectedRow.playerId)));
+    actions.appendChild(makePdfExportButton());
     container.appendChild(actions);
     container.appendChild(renderPlayerStatsCard(selectedRow, perGameStats, [], activeFilters));
     appEl.appendChild(container);
@@ -3465,10 +3701,13 @@ function renderPlayerStatsScreen(selectedPlayerId = null, comparisonPlayerIds = 
   const compareActions = document.createElement('div');
   compareActions.className = 'player-compare-controls';
   compareActions.appendChild(clearCompareButton);
+  compareActions.appendChild(makePdfExportButton());
   container.appendChild(compareActions);
 
   const comparisonRows = rows.filter((row) => comparisonPlayerIds.includes(row.playerId));
-  if (comparisonRows.length >= 2) container.appendChild(renderPlayerComparison(comparisonRows));
+  if (comparisonRows.length >= 2) {
+    container.appendChild(renderPlayerComparison(comparisonRows, perGameStats));
+  }
 
   appEl.appendChild(container);
 }
@@ -3575,9 +3814,14 @@ function getPlayerStatsForDisplay(stats, gameCount, perGameStats) {
   return displayStats;
 }
 
-function renderPlayerComparison(rows) {
+function renderPlayerComparison(rows, perGameStats = true) {
   const section = document.createElement('section');
   section.className = 'player-comparison';
+
+  const displayRows = rows.map((row) => ({
+    ...row,
+    stats: getPlayerStatsForDisplay(row.stats, row.setCount || row.gameCount, perGameStats),
+  }));
 
   const title = document.createElement('h2');
   title.textContent = 'Player Comparison';
@@ -3585,11 +3829,13 @@ function renderPlayerComparison(rows) {
 
   const description = document.createElement('p');
   description.className = 'player-stats-meta';
-  description.textContent = 'Totals across completed games for the selected players.';
+  description.textContent = perGameStats
+    ? 'Counting stats are shown per completed set for the selected players.'
+    : 'Totals across completed sets for the selected players.';
   section.appendChild(description);
 
-  section.appendChild(renderPlayerComparisonMetricTable(rows));
-  section.appendChild(renderPlayerComparisonRawTable(rows));
+  section.appendChild(renderPlayerComparisonMetricTable(displayRows));
+  section.appendChild(renderPlayerComparisonRawTable(displayRows, perGameStats));
   return section;
 }
 
@@ -3618,7 +3864,7 @@ function renderPlayerComparisonMetricTable(rows) {
       rowElement.appendChild(renderTableCell(label, 'th'));
       const values = rows.map((player) => player.stats[key]);
       const valueCells = values.map((value) => renderTableCell(formatter(value)));
-      markBestComparisonCells(valueCells, values);
+      markBestComparisonCells(valueCells, values, isLowerIsBetterMetric(key));
       valueCells.forEach((cell) => rowElement.appendChild(cell));
       table.appendChild(rowElement);
     }
@@ -3628,12 +3874,12 @@ function renderPlayerComparisonMetricTable(rows) {
   return section;
 }
 
-function renderPlayerComparisonRawTable(rows) {
+function renderPlayerComparisonRawTable(rows, perGameStats = true) {
   const section = document.createElement('section');
   section.className = 'player-stats-section';
 
   const title = document.createElement('h3');
-  title.textContent = 'Phase Totals';
+  title.textContent = perGameStats ? 'Phase Totals Per Set' : 'Phase Totals';
   section.appendChild(title);
 
   const table = document.createElement('table');
@@ -3666,7 +3912,7 @@ function renderPlayerComparisonRawTable(rows) {
         actionKey,
       ));
       const valueCells = values.map((value) => renderTableCell(formatStatNumber(value)));
-      markBestComparisonCells(valueCells, values);
+      markBestComparisonCells(valueCells, values, isLowerIsBetterRawStat(bucketName, actionKey));
       valueCells.forEach((cell) => rowElement.appendChild(cell));
       table.appendChild(rowElement);
     }
@@ -3751,7 +3997,12 @@ function renderPlayerAggregateRawTable(stats, perGameStats = false) {
   return section;
 }
 
-function renderGameSummaryScreen(gameId, scope = 'match', restoreScroll = null) {
+function renderGameSummaryScreen(
+  gameId,
+  scope = 'match',
+  restoreScroll = null,
+  confirmationMessage = '',
+) {
   const shouldRestoreScroll = restoreScroll
     && Number.isFinite(Number(restoreScroll.top))
     && Number.isFinite(Number(restoreScroll.left));
@@ -3800,13 +4051,24 @@ function renderGameSummaryScreen(gameId, scope = 'match', restoreScroll = null) 
 
   const matchup = document.createElement('p');
   matchup.className = 'summary-matchup';
-  matchup.textContent = `${nameA} & ${nameB} vs. ${game.opponentName}`;
+  matchup.textContent = `${nameA} & ${nameB} vs. ${opponentDisplayName(game)}`;
   header.appendChild(matchup);
 
   const date = document.createElement('p');
   date.className = 'summary-date';
   date.textContent = `Played ${formatPlayedDate(playedDateForGame(game))} · Logged ${formatGameDate(game.date)}`;
   header.appendChild(date);
+
+  if (confirmationMessage) {
+    const confirmation = document.createElement('p');
+    confirmation.className = 'game-note-save-confirmation';
+    confirmation.textContent = confirmationMessage;
+    confirmation.setAttribute('aria-live', 'polite');
+    header.appendChild(confirmation);
+    window.setTimeout(() => {
+      if (confirmation.isConnected) confirmation.hidden = true;
+    }, 3000);
+  }
 
   const scoreLine = document.createElement('div');
   scoreLine.className = 'summary-score';
@@ -3849,6 +4111,7 @@ function renderGameSummaryScreen(gameId, scope = 'match', restoreScroll = null) 
   actions.appendChild(makeButton('Back to History', 'secondary-btn', () => navigate('history')));
   actions.appendChild(makeButton('Export JSON', 'secondary-btn', () => exportGameJson(game.id)));
   actions.appendChild(makeButton('Export CSV', 'secondary-btn', () => exportGameCsv(game.id)));
+  actions.appendChild(makePdfExportButton());
   actions.appendChild(makeButton('Edit Details', 'secondary-btn', () => navigate('editGameDetails', game.id)));
   if (!game.isComplete) {
     actions.appendChild(makeButton('Resume Match', 'primary-btn', () => {
@@ -3904,6 +4167,12 @@ function renderGameNotes(game, scope = 'match', returnToLive = false) {
   textarea.setAttribute('aria-label', 'Game notes');
   form.appendChild(textarea);
 
+  const saveConfirmation = document.createElement('p');
+  saveConfirmation.className = 'game-note-save-confirmation';
+  saveConfirmation.textContent = 'Note saved.';
+  saveConfirmation.hidden = true;
+  saveConfirmation.setAttribute('aria-live', 'polite');
+
   const actions = document.createElement('div');
   actions.className = 'summary-actions game-notes-actions';
   actions.appendChild(makeButton('Save Note', 'primary-btn', () => {
@@ -3911,10 +4180,13 @@ function renderGameNotes(game, scope = 'match', returnToLive = false) {
       alert('Could not save the game note — try again.');
       return;
     }
-    if (returnToLive) renderLiveTrackingScreen(game.id);
-    else navigateToSummary(game.id, captureSummaryReturnState(scope));
+    saveConfirmation.hidden = false;
+    window.setTimeout(() => {
+      if (saveConfirmation.isConnected) saveConfirmation.hidden = true;
+    }, 3000);
   }));
   form.appendChild(actions);
+  form.appendChild(saveConfirmation);
   section.appendChild(form);
 
   return section;
@@ -4080,6 +4352,7 @@ function getStatBreakdownDefinitions() {
 
       definitions.push({
         id: `metric:${key}`,
+        key,
         group: group.label,
         label: statRankingLabelOverrides[key] || label,
         formatter,
@@ -4281,9 +4554,12 @@ function renderStatBreakdownTable(definitions, rows, perGameStats, sortId, sortD
       const valueCell = renderTableCell(hasStatValue ? definition.formatter(statValue) : '—');
       if (hasStatValue) {
         const range = valueRanges[definitionIndex];
-        const intensity = range && range.max > range.min
+        const higherIsBetterIntensity = range && range.max > range.min
           ? (statValue - range.min) / (range.max - range.min)
           : 0;
+        const intensity = isLowerIsBetterMetric(definition.key)
+          ? 1 - higherIsBetterIntensity
+          : higherIsBetterIntensity;
         valueCell.classList.add('stat-ranking-value-cell');
         valueCell.style.backgroundColor = `rgba(34, 197, 94, ${(intensity * 0.78).toFixed(3)})`;
       }
@@ -4364,6 +4640,7 @@ function renderStatBreakdownScreen(
   totalText.textContent = 'Total Stats';
   totalToggle.appendChild(totalText);
   displayActions.appendChild(totalToggle);
+  displayActions.appendChild(makePdfExportButton());
   container.appendChild(displayActions);
 
   container.appendChild(renderStatBreakdownSelector(definitions, [...selectedIds], (nextSelectedIds) => {
@@ -4436,11 +4713,11 @@ function renderStatBreakdownScreen(
 const DEFAULT_STATISTICAL_BREAKDOWN_FILTERS = {
   playerId: '',
   partnerId: '',
-  opponent: '',
+  opponentTeam: '',
+  opponentPair: '',
   fromDate: '',
   toDate: '',
   setNumber: 'match',
-  status: 'completed',
   result: '',
   tab: 'serving',
   statValueSortKey: '__metric',
@@ -4503,11 +4780,17 @@ function renderStatisticalBreakdownFilterPanel(filters, onChange) {
   partnerSelect.value = filters.partnerId;
   partnerSelect.disabled = !filters.playerId;
 
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'search';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  opponentInput.value = filters.opponent;
-  opponentInput.setAttribute('aria-label', 'Filter statistical breakdowns by opponent');
+  const opponentGames = loadGameHistory();
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(opponentGames, 'team'),
+    filters.opponentTeam,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(opponentGames, 'pair'),
+    filters.opponentPair,
+  );
 
   const fromDateInput = document.createElement('input');
   fromDateInput.type = 'date';
@@ -4524,12 +4807,6 @@ function renderStatisticalBreakdownFilterPanel(filters, onChange) {
   for (const setNumber of [1, 2, 3]) setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
   setSelect.value = filters.setNumber || 'match';
 
-  const statusSelect = document.createElement('select');
-  statusSelect.appendChild(new Option('Completed only', 'completed'));
-  statusSelect.appendChild(new Option('Any status', ''));
-  statusSelect.appendChild(new Option('Paused', 'paused'));
-  statusSelect.value = filters.status;
-
   const resultSelect = document.createElement('select');
   resultSelect.appendChild(new Option('Any result', ''));
   resultSelect.appendChild(new Option('Wins', 'win'));
@@ -4538,11 +4815,11 @@ function renderStatisticalBreakdownFilterPanel(filters, onChange) {
 
   panel.appendChild(makeField('View stats for', playerSelect));
   panel.appendChild(makeField('Partner', partnerSelect));
-  panel.appendChild(makeField('Opponent', opponentInput));
+  panel.appendChild(opponentTeamField.field);
+  panel.appendChild(opponentPairField.field);
   panel.appendChild(makeField('Played from', fromDateInput));
   panel.appendChild(makeField('Played through', toDateInput));
   panel.appendChild(makeField('View', setSelect));
-  panel.appendChild(makeField('Status', statusSelect));
   panel.appendChild(makeField('Result', resultSelect));
 
   const actions = document.createElement('div');
@@ -4554,11 +4831,11 @@ function renderStatisticalBreakdownFilterPanel(filters, onChange) {
     ...filters,
     playerId: playerSelect.value,
     partnerId: partnerSelect.value,
-    opponent: opponentInput.value.trim(),
+    opponentTeam: opponentTeamField.select.value,
+    opponentPair: opponentPairField.select.value,
     fromDate: fromDateInput.value,
     toDate: toDateInput.value,
     setNumber: setSelect.value,
-    status: statusSelect.value,
     result: resultSelect.value,
   });
 
@@ -4567,7 +4844,7 @@ function renderStatisticalBreakdownFilterPanel(filters, onChange) {
     playerId: playerSelect.value,
     partnerId: '',
   }));
-  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [partnerSelect, opponentTeamField.select, opponentPairField.select, fromDateInput, toDateInput, setSelect, resultSelect]) {
     control.addEventListener('input', collectFilters);
     control.addEventListener('change', collectFilters);
   }
@@ -4704,6 +4981,11 @@ function renderStatisticalBreakdownsScreen(state = {}) {
     renderStatisticalBreakdownsScreen(nextFilters);
   }));
 
+  const exportActions = document.createElement('div');
+  exportActions.className = 'summary-actions statistical-breakdown-export-actions';
+  exportActions.appendChild(makePdfExportButton());
+  container.appendChild(exportActions);
+
   if (completedGames.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'empty-state';
@@ -4748,11 +5030,11 @@ const DEFAULT_VISUALIZATION_STATE = {
   playerId: '',
   comparePlayerIds: [],
   partnerId: '',
-  opponent: '',
+  opponentTeam: '',
+  opponentPair: '',
   fromDate: '',
   toDate: '',
   setNumber: 'match',
-  status: 'completed',
   result: '',
   metricId: '',
   statIds: ['metric:totalPointsGained'],
@@ -4874,11 +5156,19 @@ function renderVisualizationFilterPanel(state, onChange) {
     panel.appendChild(makeField('Partner', partnerSelect));
   }
 
-  const opponentInput = document.createElement('input');
-  opponentInput.type = 'search';
-  opponentInput.placeholder = 'e.g. Smith/Jones';
-  opponentInput.value = state.opponent;
-  panel.appendChild(makeField('Opponent', opponentInput));
+  const opponentGames = loadGameHistory();
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    opponentOptionValues(opponentGames, 'team'),
+    state.opponentTeam,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    opponentOptionValues(opponentGames, 'pair'),
+    state.opponentPair,
+  );
+  panel.appendChild(opponentTeamField.field);
+  panel.appendChild(opponentPairField.field);
 
   const fromDateInput = document.createElement('input');
   fromDateInput.type = 'date';
@@ -4895,13 +5185,6 @@ function renderVisualizationFilterPanel(state, onChange) {
   for (const setNumber of [1, 2, 3]) setSelect.appendChild(new Option(`Set ${setNumber}`, String(setNumber)));
   setSelect.value = state.setNumber;
   panel.appendChild(makeField('View', setSelect));
-
-  const statusSelect = document.createElement('select');
-  statusSelect.appendChild(new Option('Completed only', 'completed'));
-  statusSelect.appendChild(new Option('Any status', ''));
-  statusSelect.appendChild(new Option('Paused', 'paused'));
-  statusSelect.value = state.status;
-  panel.appendChild(makeField('Status', statusSelect));
 
   const resultSelect = document.createElement('select');
   resultSelect.appendChild(new Option('Any result', ''));
@@ -4924,11 +5207,11 @@ function renderVisualizationFilterPanel(state, onChange) {
     comparePlayerIds: [...comparisonOptions.querySelectorAll('input[type="checkbox"]:checked')]
       .map((checkbox) => checkbox.value),
     partnerId: partnerSelect.value,
-    opponent: opponentInput.value.trim(),
+    opponentTeam: opponentTeamField.select.value,
+    opponentPair: opponentPairField.select.value,
     fromDate: fromDateInput.value,
     toDate: toDateInput.value,
     setNumber: setSelect.value,
-    status: statusSelect.value,
     result: resultSelect.value,
   });
 
@@ -4945,7 +5228,7 @@ function renderVisualizationFilterPanel(state, onChange) {
   for (const checkbox of comparisonOptions.querySelectorAll('input[type="checkbox"]')) {
     checkbox.addEventListener('change', collectFilters);
   }
-  for (const control of [partnerSelect, opponentInput, fromDateInput, toDateInput, setSelect, statusSelect, resultSelect]) {
+  for (const control of [partnerSelect, opponentTeamField.select, opponentPairField.select, fromDateInput, toDateInput, setSelect, resultSelect]) {
     control.addEventListener('input', collectFilters);
     control.addEventListener('change', collectFilters);
   }
@@ -5092,7 +5375,7 @@ function visualizationDayWindows(days, chartMode) {
 }
 
 function visualizationAxisValue(value, format, maxValue) {
-  if (format === 'percent') return `${Math.round(value * 100)}%`;
+  if (format === 'percent') return Number(value).toFixed(2);
   if (format === 'decimal') return value.toFixed(1);
   return formatStatNumber(value);
 }
@@ -5323,7 +5606,7 @@ function getWinLossSetPoints(games, scope, xDefinition, yDefinition) {
       const won = score.team > score.opponent;
       points.push({
         label: `${visualizationShortDate(game)} · Set ${setNumber}`,
-        opponent: game.opponentName || 'Unknown opponent',
+        opponent: opponentDisplayName(game),
         setNumber,
         score: `${score.team}–${score.opponent}`,
         result: won ? 'Win' : 'Loss',
@@ -5830,6 +6113,11 @@ function renderVisualizationsScreen(state = {}) {
     ));
   }
 
+  const visualizationExportActions = document.createElement('div');
+  visualizationExportActions.className = 'summary-actions visualization-export-actions';
+  visualizationExportActions.appendChild(makePdfExportButton());
+  container.appendChild(visualizationExportActions);
+
   const matchingGames = filterVisualizationGames(loadGameHistory(), activeState);
   const completedGames = matchingGames
     .filter((game) => game.isComplete)
@@ -6033,13 +6321,46 @@ function renderTableCell(value, tagName = 'td') {
   return cell;
 }
 
-function markBestComparisonCells(cells, values) {
+const LOWER_IS_BETTER_METRIC_KEYS = new Set([
+  'totalErrors',
+]);
+
+const LOWER_IS_BETTER_RAW_STAT_KEYS = new Set([
+  'serve:error',
+  'serve:in_system',
+  'passing:aced',
+  'passing:oos',
+  'setting:error',
+  'setting:error_continue',
+  'setting:1',
+  'setting:2',
+  'sideout:error',
+  'sideout:continue',
+  'sideout:blocked',
+  'transition:error',
+  'transition:continue',
+  'transition:blocked',
+  'defense:block_error',
+  'defense:dig_error',
+]);
+
+function isLowerIsBetterMetric(key) {
+  return LOWER_IS_BETTER_METRIC_KEYS.has(key);
+}
+
+function isLowerIsBetterRawStat(bucketName, actionKey) {
+  return LOWER_IS_BETTER_RAW_STAT_KEYS.has(`${bucketName}:${actionKey}`);
+}
+
+function markBestComparisonCells(cells, values, lowerIsBetter = false) {
   const numericValues = values
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value));
   if (numericValues.length === 0) return;
 
-  const bestValue = Math.max(...numericValues);
+  const bestValue = lowerIsBetter
+    ? Math.min(...numericValues)
+    : Math.max(...numericValues);
   values.forEach((value, index) => {
     if (Number(value) === bestValue) {
       cells[index].classList.add('comparison-best-value');

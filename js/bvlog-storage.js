@@ -245,6 +245,20 @@ function loadGameHistory() {
         changed = true;
       }
 
+      // Opponent team/pair fields were added after older games were saved.
+      // Preserve the old opponent name as the pair when no team is available.
+      const opponentTeam = String(game.opponentTeam || '').trim();
+      const opponentPair = String(game.opponentPair || game.opponentName || '').trim();
+      const opponentName = [opponentTeam, opponentPair].filter(Boolean).join(' — ');
+      if (game.opponentTeam !== opponentTeam
+        || game.opponentPair !== opponentPair
+        || game.opponentName !== opponentName) {
+        game.opponentTeam = opponentTeam;
+        game.opponentPair = opponentPair;
+        game.opponentName = opponentName;
+        changed = true;
+      }
+
       // Match-level set state was added after older games were saved. Older
       // games are treated as one completed/current set, and their events are
       // tagged as Set 1 for filtering and per-set calculations.
@@ -329,6 +343,9 @@ function getGameCloudMetadata(game) {
     playerAId: game.playerAId || null,
     playerBId: game.playerBId || null,
     opponentName: game.opponentName || '',
+    opponentTeam: game.opponentTeam || '',
+    opponentPair: game.opponentPair || '',
+    loggedBy: game.loggedBy || '',
     playedDate: game.playedDate || '',
     startingAction: game.startingAction || null,
     setStartingActions: game.setStartingActions || {},
@@ -653,12 +670,14 @@ function updateGameDetails(gameId, details) {
 
   const playerAId = String(details.playerAId || '');
   const playerBId = String(details.playerBId || '');
-  const opponentName = String(details.opponentName || '').trim();
+  const opponentTeam = String(details.opponentTeam || '').trim();
+  const opponentPair = String(details.opponentPair || details.opponentName || '').trim();
+  const opponentName = [opponentTeam, opponentPair].filter(Boolean).join(' — ');
   const playedDate = String(details.playedDate || '');
   const startingAction = details.startingAction;
 
   if (!playerAId || !playerBId || playerAId === playerBId) return false;
-  if (!opponentName) return false;
+  if (!opponentTeam || !opponentPair) return false;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(playedDate)) return false;
   if (Number.isNaN(new Date(`${playedDate}T00:00:00`).getTime())) return false;
   if (startingAction !== 'serve' && startingAction !== 'receive') return false;
@@ -666,6 +685,9 @@ function updateGameDetails(gameId, details) {
   game.playerAId = playerAId;
   game.playerBId = playerBId;
   game.opponentName = opponentName;
+  game.opponentTeam = opponentTeam;
+  game.opponentPair = opponentPair;
+  game.loggedBy = String(details.loggedBy || '').trim();
   game.playedDate = playedDate;
   game.startingAction = startingAction;
   game.setStartingActions = {
@@ -673,6 +695,23 @@ function updateGameDetails(gameId, details) {
     1: startingAction,
   };
   return saveGame(game);
+}
+
+// Changes the opening serve/receive choice before Set 1 has any logged
+// events. This is used when Undo is pressed immediately after a new match
+// starts, so the existing game record is reused instead of creating a
+// duplicate game.
+function updateGameStartingAction(gameId, startingAction) {
+  const game = getGameById(gameId);
+  if (!game || game.isComplete || (game.events || []).length > 0) return false;
+  if (startingAction !== 'serve' && startingAction !== 'receive') return false;
+
+  game.startingAction = startingAction;
+  game.setStartingActions = {
+    ...(game.setStartingActions || {}),
+    1: startingAction,
+  };
+  return saveGame(game, { sync: true });
 }
 
 // Saves coach notes independently from the recorded point sequence. Notes

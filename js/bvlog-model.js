@@ -204,13 +204,28 @@ function createEvent({ phase, player, action, pointNumber, setNumber = 1, attack
 // Game
 // ----------------------------
 
-function createGame({ playerAId, playerBId, opponentName, startingAction, playedDate }) {
+function createGame({
+  playerAId,
+  playerBId,
+  opponentName,
+  opponentTeam,
+  opponentPair,
+  loggedBy,
+  startingAction,
+  playedDate,
+}) {
   // startingAction: 'serve' | 'receive' — determines the opening phase
   // playerAId/playerBId: Roster player ids (NOT the player objects
   // themselves) — look the current name up with findPlayerById()
   // from bvlog-storage.js whenever you display it. That way a rename
   // in the Roster is reflected in every past game automatically,
   // instead of freezing whatever name was typed at game time.
+  const normalizedOpponentTeam = String(opponentTeam || '').trim();
+  const normalizedOpponentPair = String(opponentPair || opponentName || '').trim();
+  const displayOpponentName = [normalizedOpponentTeam, normalizedOpponentPair]
+    .filter(Boolean)
+    .join(' — ');
+
   return {
     id: crypto.randomUUID(),
     date: new Date().toISOString(), // when the game was logged
@@ -222,7 +237,10 @@ function createGame({ playerAId, playerBId, opponentName, startingAction, played
     completedSetNumbers: [],
     playerAId,
     playerBId,
-    opponentName,
+    opponentName: displayOpponentName,
+    opponentTeam: normalizedOpponentTeam,
+    opponentPair: normalizedOpponentPair,
+    loggedBy: String(loggedBy || '').trim(),
     notes: '',
     startingAction,
     setStartingActions: { 1: startingAction },

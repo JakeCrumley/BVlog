@@ -702,6 +702,7 @@ h1 {
 
 .tracking-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 24px;
 }
@@ -727,6 +728,7 @@ h1 {
 
 .undo-btn,
 .pause-btn,
+.swap-player-sides-btn,
 .swap-server-btn,
 .end-match-btn {
   flex: 1;
@@ -1458,6 +1460,13 @@ h1 {
   margin-top: 0;
 }
 
+.game-note-save-confirmation {
+  margin: 0;
+  color: #86efac;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .summary-log-controls {
   display: flex;
   align-items: center;
@@ -2054,6 +2063,7 @@ h1 {
 
   .undo-btn,
   .pause-btn,
+  .swap-player-sides-btn,
   .swap-server-btn,
   .end-match-btn {
     min-width: 0;
@@ -2447,5 +2457,67 @@ h1 {
 
   .stats-table {
     min-width: 600px;
+  }
+}
+
+@media print {
+  @page {
+    size: landscape;
+    margin: 0.45in;
+  }
+
+  body.pdf-export-mode {
+    padding: 0;
+    background: #ffffff;
+    color: #111827;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body.pdf-export-mode .brand-header,
+  body.pdf-export-mode .summary-actions,
+  body.pdf-export-mode .history-filter-panel,
+  body.pdf-export-mode .stat-breakdown-selector,
+  body.pdf-export-mode .stat-breakdown-actions,
+  body.pdf-export-mode .statistical-breakdown-tabs,
+  body.pdf-export-mode .visualization-tabs,
+  body.pdf-export-mode .player-list,
+  body.pdf-export-mode .player-compare-controls,
+  body.pdf-export-mode .summary-scope-control,
+  body.pdf-export-mode .summary-log-controls,
+  body.pdf-export-mode .visualization-chart-mode,
+  body.pdf-export-mode .pdf-export-control {
+    display: none !important;
+  }
+
+  body.pdf-export-mode .screen,
+  body.pdf-export-mode .player-stats-section,
+  body.pdf-export-mode .summary-section,
+  body.pdf-export-mode .statistical-breakdown-section {
+    max-width: none;
+    overflow: visible;
+  }
+
+  body.pdf-export-mode .stats-table {
+    width: 100%;
+    min-width: 0;
+    background: #ffffff;
+    color: #111827;
+  }
+
+  body.pdf-export-mode .stats-table th,
+  body.pdf-export-mode .stats-table td {
+    color: #111827;
+    border-color: #cbd5e1;
+  }
+
+  body.pdf-export-mode .stats-table > tr:first-child,
+  body.pdf-export-mode .stats-group-row th {
+    background: #e5e7eb;
+    color: #111827;
+  }
+
+  body.pdf-export-mode .stat-breakdown-sort-btn {
+    color: #111827;
   }
 }

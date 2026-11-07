@@ -14,6 +14,7 @@ const STORAGE_KEYS = {
   ROSTER: 'bvlog_roster',
   GAMES: 'bvlog_games',
   GAMES_COMPRESSED: 'bvlog_games_compressed',
+  ACTIVE_GAMES: 'bvlog_active_games',
   DELETED_GAMES: 'bvlog_deleted_games',
 };
 
@@ -120,6 +121,45 @@ function decodeGameHistory(value) {
   return JSON.parse(decompressGameHistoryText(envelope.data));
 }
 
+function loadActiveGames() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_GAMES);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((game) => game?.id) : [];
+  } catch (error) {
+    console.error('Could not load active game storage:', error);
+    return [];
+  }
+}
+
+function saveActiveGames(games) {
+  localStorage.setItem(STORAGE_KEYS.ACTIVE_GAMES, JSON.stringify(games));
+}
+
+function saveActiveGame(game) {
+  try {
+    const activeGames = loadActiveGames();
+    const index = activeGames.findIndex((entry) => entry.id === game.id);
+    if (index === -1) activeGames.push(game);
+    else activeGames[index] = game;
+    saveActiveGames(activeGames);
+    lastStorageWriteError = '';
+    return true;
+  } catch (error) {
+    lastStorageWriteError = storageWriteErrorMessage(error);
+    console.error('Could not save active game:', error);
+    return false;
+  }
+}
+
+function removeActiveGames(gameIds = []) {
+  const ids = new Set(gameIds);
+  const remaining = loadActiveGames().filter((game) => !ids.has(game.id));
+  if (remaining.length === 0) localStorage.removeItem(STORAGE_KEYS.ACTIVE_GAMES);
+  else saveActiveGames(remaining);
+}
+
 function persistGameHistory(games) {
   const encoded = encodeGameHistory(games);
   const previousRaw = localStorage.getItem(STORAGE_KEYS.GAMES);
@@ -134,6 +174,8 @@ function persistGameHistory(games) {
     }
     localStorage.setItem(STORAGE_KEYS.GAMES_COMPRESSED, encoded);
     if (previousRaw !== null) localStorage.removeItem(STORAGE_KEYS.GAMES);
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_GAMES);
+    gameHistoryCache = games;
     lastStorageWriteError = '';
     return true;
   } catch (error) {
@@ -151,6 +193,20 @@ function persistGameHistory(games) {
 }
 
 let lastStorageWriteError = '';
+let gameHistoryCache = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if ([
+      STORAGE_KEYS.GAMES,
+      STORAGE_KEYS.GAMES_COMPRESSED,
+      STORAGE_KEYS.ACTIVE_GAMES,
+      STORAGE_KEYS.DELETED_GAMES,
+    ].includes(event.key)) {
+      gameHistoryCache = null;
+    }
+  });
+}
 
 function storageWriteErrorMessage(error) {
   if (error?.name === 'QuotaExceededError') {
@@ -379,6 +435,8 @@ function markGameDeleted(gameId, notifyCloud = true) {
 
 function loadGameHistory() {
   try {
+    if (gameHistoryCache) return gameHistoryCache;
+
     const compressed = localStorage.getItem(STORAGE_KEYS.GAMES_COMPRESSED);
     let raw = localStorage.getItem(STORAGE_KEYS.GAMES);
     if (compressed !== null) {
@@ -389,13 +447,21 @@ function loadGameHistory() {
         console.error('Could not decode compressed game history; trying legacy storage:', decodeError);
       }
     }
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
+    const activeGames = loadActiveGames();
+    if (!raw && activeGames.length === 0) {
+      gameHistoryCache = [];
+      return gameHistoryCache;
+    }
+    const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
 
+    const gamesById = new Map(parsed.filter((game) => game?.id).map((game) => [game.id, game]));
+    for (const activeGame of activeGames) gamesById.set(activeGame.id, activeGame);
+    const combinedGames = [...gamesById.values()];
+
     const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
-    const visibleGames = parsed.filter((game) => !deletedIds.has(game?.id));
-    let changed = visibleGames.length !== parsed.length;
+    const visibleGames = combinedGames.filter((game) => !deletedIds.has(game?.id));
+    let changed = visibleGames.length !== combinedGames.length;
     for (const game of visibleGames) {
       if (!game || typeof game !== 'object') continue;
       const normalizedStatus = game.isComplete ? 'completed' : 'paused';
@@ -470,7 +536,8 @@ function loadGameHistory() {
     if (changed) {
       persistGameHistory(visibleGames);
     }
-    return visibleGames;
+    gameHistoryCache = visibleGames;
+    return gameHistoryCache;
   } catch (err) {
     console.error('loadGameHistory failed, returning empty history:', err);
     return [];
@@ -538,7 +605,17 @@ function saveGame(game, options = {}) {
     games[index] = game;
   }
 
-  if (!saveGameHistory(games, false)) return false;
+  const shouldPersistHistory = Boolean(
+    options.sync
+    || game.isComplete
+    || previousGame?.isComplete
+    || (index !== -1 && metadataChanged)
+  );
+  const saved = shouldPersistHistory
+    ? saveGameHistory(games, false)
+    : saveActiveGame(game);
+  if (!saved) return false;
+  gameHistoryCache = games;
 
   const shouldSync = Boolean(
     options.sync

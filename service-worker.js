@@ -1,4 +1,4 @@
-const BVLOG_CACHE_NAME = 'bvlog-shell-v10';
+const BVLOG_CACHE_NAME = 'bvlog-shell-v11';
 const BVLOG_APP_SHELL = [
   './index.html',
   './manifest.webmanifest',

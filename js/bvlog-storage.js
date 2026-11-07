@@ -83,13 +83,13 @@ function compressGameHistoryText(input) {
 
 function decompressGameHistoryText(input) {
   const compressed = String(input || '');
-  let output = '';
+  const output = [];
   let position = 0;
   while (position < compressed.length) {
     const token = compressed.charCodeAt(position++);
     if (token === GAME_HISTORY_LITERAL_TOKEN) {
       if (position >= compressed.length) throw new Error('Incomplete game history literal.');
-      output += String.fromCharCode(compressed.charCodeAt(position++));
+      output.push(String.fromCharCode(compressed.charCodeAt(position++)));
       continue;
     }
     if (token === GAME_HISTORY_REFERENCE_TOKEN) {
@@ -99,13 +99,13 @@ function decompressGameHistoryText(input) {
       const start = output.length - offset;
       if (start < 0 || length < 1) throw new Error('Invalid game history reference.');
       for (let index = 0; index < length; index += 1) {
-        output += output[start + index];
+        output.push(output[start + index]);
       }
       continue;
     }
     throw new Error('Unknown game history compression token.');
   }
-  return output;
+  return output.join('');
 }
 
 function encodeGameHistory(games) {
@@ -438,21 +438,21 @@ function loadGameHistory() {
     if (gameHistoryCache) return gameHistoryCache;
 
     const compressed = localStorage.getItem(STORAGE_KEYS.GAMES_COMPRESSED);
-    let raw = localStorage.getItem(STORAGE_KEYS.GAMES);
+    const raw = localStorage.getItem(STORAGE_KEYS.GAMES);
+    let parsed = null;
     if (compressed !== null) {
       try {
-        const decoded = decodeGameHistory(compressed);
-        raw = JSON.stringify(decoded);
+        parsed = decodeGameHistory(compressed);
       } catch (decodeError) {
         console.error('Could not decode compressed game history; trying legacy storage:', decodeError);
       }
     }
     const activeGames = loadActiveGames();
-    if (!raw && activeGames.length === 0) {
+    if (!parsed && !raw && activeGames.length === 0) {
       gameHistoryCache = [];
       return gameHistoryCache;
     }
-    const parsed = raw ? JSON.parse(raw) : [];
+    if (!parsed) parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
 
     const gamesById = new Map(parsed.filter((game) => game?.id).map((game) => [game.id, game]));

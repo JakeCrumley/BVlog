@@ -77,5 +77,14 @@ window.addEventListener('bvlog-cloud-updated', () => {
 
 document.addEventListener('DOMContentLoaded', () => {
   navigate('home');
-  if (typeof startCloudSync === 'function') startCloudSync().catch(() => {});
+  // Let the home screen paint and accept the first tap before the initial
+  // cloud merge decodes the saved game history on mobile devices.
+  if (typeof startCloudSync === 'function') {
+    const runInitialCloudSync = () => startCloudSync().catch(() => {});
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(runInitialCloudSync, { timeout: 3000 });
+    } else {
+      window.setTimeout(runInitialCloudSync, 1200);
+    }
+  }
 });

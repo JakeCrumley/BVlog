@@ -13,8 +13,142 @@
 const STORAGE_KEYS = {
   ROSTER: 'bvlog_roster',
   GAMES: 'bvlog_games',
+  GAMES_COMPRESSED: 'bvlog_games_compressed',
   DELETED_GAMES: 'bvlog_deleted_games',
 };
+
+// Game logs can grow beyond the browser's roughly 5 MB localStorage limit.
+// Keep the existing synchronous storage API, but encode the repetitive JSON
+// history with a small UTF-16 LZ-style codec before writing it. This avoids
+// requiring an asynchronous IndexedDB migration throughout the app.
+const GAME_HISTORY_LITERAL_TOKEN = 0xE000;
+const GAME_HISTORY_REFERENCE_TOKEN = 0xE001;
+
+function compressGameHistoryText(input) {
+  const source = String(input || '');
+  const positionsByKey = new Map();
+  const output = [];
+  const remember = (position) => {
+    if (position + 2 >= source.length) return;
+    const key = source.slice(position, position + 3);
+    const positions = positionsByKey.get(key) || [];
+    positions.push(position);
+    if (positions.length > 64) positions.shift();
+    positionsByKey.set(key, positions);
+  };
+
+  let position = 0;
+  while (position < source.length) {
+    let bestLength = 0;
+    let bestOffset = 0;
+    if (position + 2 < source.length) {
+      const candidates = positionsByKey.get(source.slice(position, position + 3)) || [];
+      for (let index = candidates.length - 1; index >= 0; index -= 1) {
+        const candidate = candidates[index];
+        const offset = position - candidate;
+        if (offset < 1 || offset > 0xFFFF) continue;
+
+        let length = 0;
+        while (
+          length < 0xFFFF
+          && position + length < source.length
+          && candidate + length < source.length
+          && source[candidate + length] === source[position + length]
+        ) {
+          length += 1;
+        }
+        if (length > bestLength) {
+          bestLength = length;
+          bestOffset = offset;
+        }
+      }
+    }
+
+    if (bestLength >= 4) {
+      output.push(String.fromCharCode(GAME_HISTORY_REFERENCE_TOKEN, bestOffset, bestLength));
+      for (let index = 0; index < bestLength; index += 1) remember(position + index);
+      position += bestLength;
+    } else {
+      output.push(String.fromCharCode(
+        GAME_HISTORY_LITERAL_TOKEN,
+        source.charCodeAt(position),
+      ));
+      remember(position);
+      position += 1;
+    }
+  }
+  return output.join('');
+}
+
+function decompressGameHistoryText(input) {
+  const compressed = String(input || '');
+  let output = '';
+  let position = 0;
+  while (position < compressed.length) {
+    const token = compressed.charCodeAt(position++);
+    if (token === GAME_HISTORY_LITERAL_TOKEN) {
+      if (position >= compressed.length) throw new Error('Incomplete game history literal.');
+      output += String.fromCharCode(compressed.charCodeAt(position++));
+      continue;
+    }
+    if (token === GAME_HISTORY_REFERENCE_TOKEN) {
+      if (position + 1 >= compressed.length) throw new Error('Incomplete game history reference.');
+      const offset = compressed.charCodeAt(position++);
+      const length = compressed.charCodeAt(position++);
+      const start = output.length - offset;
+      if (start < 0 || length < 1) throw new Error('Invalid game history reference.');
+      for (let index = 0; index < length; index += 1) {
+        output += output[start + index];
+      }
+      continue;
+    }
+    throw new Error('Unknown game history compression token.');
+  }
+  return output;
+}
+
+function encodeGameHistory(games) {
+  const json = JSON.stringify(games);
+  return JSON.stringify({ version: 1, data: compressGameHistoryText(json) });
+}
+
+function decodeGameHistory(value) {
+  const envelope = JSON.parse(value);
+  if (!envelope || envelope.version !== 1 || typeof envelope.data !== 'string') {
+    throw new Error('Unsupported compressed game history.');
+  }
+  return JSON.parse(decompressGameHistoryText(envelope.data));
+}
+
+function persistGameHistory(games) {
+  const encoded = encodeGameHistory(games);
+  const previousRaw = localStorage.getItem(STORAGE_KEYS.GAMES);
+  const previousCompressed = localStorage.getItem(STORAGE_KEYS.GAMES_COMPRESSED);
+
+  try {
+    // If the old uncompressed value is what filled the quota, remove it
+    // before writing the smaller replacement. Restore it if the replacement
+    // itself cannot be written.
+    if (previousCompressed === null && previousRaw !== null) {
+      localStorage.removeItem(STORAGE_KEYS.GAMES);
+    }
+    localStorage.setItem(STORAGE_KEYS.GAMES_COMPRESSED, encoded);
+    if (previousRaw !== null) localStorage.removeItem(STORAGE_KEYS.GAMES);
+    lastStorageWriteError = '';
+    return true;
+  } catch (error) {
+    if (previousCompressed === null && previousRaw !== null) {
+      try {
+        localStorage.setItem(STORAGE_KEYS.GAMES, previousRaw);
+      } catch (restoreError) {
+        console.error('Could not restore the previous game history after compression failed:', restoreError);
+      }
+    }
+    lastStorageWriteError = storageWriteErrorMessage(error);
+    console.error('persistGameHistory failed:', error);
+    return false;
+  }
+}
 
 let lastStorageWriteError = '';
 
@@ -245,7 +379,16 @@ function markGameDeleted(gameId, notifyCloud = true) {
 
 function loadGameHistory() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.GAMES);
+    const compressed = localStorage.getItem(STORAGE_KEYS.GAMES_COMPRESSED);
+    let raw = localStorage.getItem(STORAGE_KEYS.GAMES);
+    if (compressed !== null) {
+      try {
+        const decoded = decodeGameHistory(compressed);
+        raw = JSON.stringify(decoded);
+      } catch (decodeError) {
+        console.error('Could not decode compressed game history; trying legacy storage:', decodeError);
+      }
+    }
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -325,11 +468,7 @@ function loadGameHistory() {
       }
     }
     if (changed) {
-      try {
-        localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
-      } catch (migrationError) {
-        console.warn('Could not migrate game statuses:', migrationError);
-      }
+      persistGameHistory(visibleGames);
     }
     return visibleGames;
   } catch (err) {
@@ -343,8 +482,7 @@ function saveGameHistory(games, notifyCloud = true) {
     const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
     const visibleGames = (Array.isArray(games) ? games : [])
       .filter((game) => game?.id && !deletedIds.has(game.id));
-    localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
-    lastStorageWriteError = '';
+    if (!persistGameHistory(visibleGames)) return false;
     if (notifyCloud && typeof scheduleCloudSync === 'function') scheduleCloudSync();
     return true;
   } catch (err) {

@@ -134,10 +134,7 @@ async function createCloudWorkspace(name) {
     .single();
   if (workspaceError) throw workspaceError;
 
-  const { error: memberError } = await client
-    .from('bvlog_workspace_members')
-    .insert({ workspace_id: workspace.id, user_id: userData.user.id, role: 'owner' });
-  if (memberError) throw memberError;
+  await ensureCloudWorkspaceMembershipForUser(client, workspace.id, userData.user.id, 'owner');
 
   const config = loadCloudConfig();
   saveCloudConfig({ ...config, workspaceId: workspace.id });
@@ -569,6 +566,25 @@ async function loadCloudWorkspace() {
 
 // Workspace membership is automatic for a signed-in user who has the
 // embedded workspace id. The primary key makes repeat joins harmless.
+async function ensureCloudWorkspaceMembershipForUser(client, workspaceId, userId, role = 'coach') {
+  const { data: existingMembership, error: lookupError } = await client
+    .from('bvlog_workspace_members')
+    .select('workspace_id')
+    .eq('workspace_id', workspaceId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (lookupError) throw lookupError;
+  if (existingMembership) return true;
+
+  const { error } = await client
+    .from('bvlog_workspace_members')
+    .insert({ workspace_id: workspaceId, user_id: userId, role });
+  // Another tab/device may create the membership between the lookup and
+  // insert. Treat that race as success without retrying the duplicate insert.
+  if (error && error.code !== '23505') throw error;
+  return true;
+}
+
 async function ensureCloudWorkspaceMembership() {
   const client = getCloudClient();
   const workspaceId = loadCloudConfig().workspaceId;
@@ -581,10 +597,7 @@ async function ensureCloudWorkspaceMembership() {
   const membershipKey = `${workspaceId}|${userData.user.id}`;
   if (autoCloudMembershipKey === membershipKey) return true;
 
-  const { error } = await client
-    .from('bvlog_workspace_members')
-    .insert({ workspace_id: workspaceId, user_id: userData.user.id, role: 'coach' });
-  if (error && error.code !== '23505') throw error;
+  await ensureCloudWorkspaceMembershipForUser(client, workspaceId, userData.user.id, 'coach');
   autoCloudMembershipKey = membershipKey;
   return true;
 }
@@ -598,10 +611,7 @@ async function joinCloudWorkspace() {
   if (userError) throw userError;
   if (!userData.user) throw new Error('Sign in before joining a workspace.');
 
-  const { error } = await client
-    .from('bvlog_workspace_members')
-    .insert({ workspace_id: workspaceId, user_id: userData.user.id, role: 'coach' });
-  if (error && error.code !== '23505') throw error;
+  await ensureCloudWorkspaceMembershipForUser(client, workspaceId, userData.user.id, 'coach');
   await startCloudSync();
   return fetchCloudWorkspace();
 }

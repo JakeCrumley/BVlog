@@ -16,6 +16,22 @@ const STORAGE_KEYS = {
   DELETED_GAMES: 'bvlog_deleted_games',
 };
 
+let lastStorageWriteError = '';
+
+function storageWriteErrorMessage(error) {
+  if (error?.name === 'QuotaExceededError') {
+    return 'Browser storage is full. Export a backup or clear unused local site data, then try again.';
+  }
+  if (error?.name === 'SecurityError') {
+    return 'Browser storage is blocked. Allow site data for this app and try again.';
+  }
+  return error?.message ? `Browser storage could not be written: ${error.message}` : 'Browser storage could not be written.';
+}
+
+function getLastStorageWriteError() {
+  return lastStorageWriteError;
+}
+
 // ----------------------------
 // Roster
 // ----------------------------
@@ -328,9 +344,11 @@ function saveGameHistory(games, notifyCloud = true) {
     const visibleGames = (Array.isArray(games) ? games : [])
       .filter((game) => game?.id && !deletedIds.has(game.id));
     localStorage.setItem(STORAGE_KEYS.GAMES, JSON.stringify(visibleGames));
+    lastStorageWriteError = '';
     if (notifyCloud && typeof scheduleCloudSync === 'function') scheduleCloudSync();
     return true;
   } catch (err) {
+    lastStorageWriteError = storageWriteErrorMessage(err);
     console.error('saveGameHistory failed:', err);
     return false;
   }
@@ -361,7 +379,14 @@ function getGameCloudMetadata(game) {
 // and persists locally. Live event-only saves stay local; pass { sync: true }
 // for an explicit pause/completion boundary.
 function saveGame(game, options = {}) {
-  if (!game?.id || isGameDeleted(game.id)) return false;
+  if (!game?.id) {
+    lastStorageWriteError = 'The new game did not receive a valid ID.';
+    return false;
+  }
+  if (isGameDeleted(game.id)) {
+    lastStorageWriteError = 'This game ID is marked as deleted. Please start the game again.';
+    return false;
+  }
   game.updatedAt = new Date().toISOString();
   const games = loadGameHistory();
   const index = games.findIndex(g => g.id === game.id);

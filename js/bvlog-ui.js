@@ -854,7 +854,10 @@ function renderStartingActionScreen(setupData) {
 
     const game = createGame({ ...setupData, startingAction });
     if (!saveGame(game)) {
-      alert('Could not save the new game — try again.');
+      const reason = typeof getLastStorageWriteError === 'function'
+        ? getLastStorageWriteError()
+        : '';
+      alert(`Could not save the new game — try again.${reason ? `\n\n${reason}` : ''}`);
       return;
     }
     navigate('liveGame', game.id);

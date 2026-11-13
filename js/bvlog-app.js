@@ -7,7 +7,7 @@
 
 const SCREENS = {
   home:           () => renderHomeScreen(),
-  roster:         () => renderRosterScreen(),
+  roster:         (state = 'roster') => renderRosterScreen(state),
   newGame:        () => renderGameSetupScreen(),
   startingAction: (setupData) => renderStartingActionScreen(setupData),
   setStartingAction: (state = {}) => renderSetStartingActionScreen(state),

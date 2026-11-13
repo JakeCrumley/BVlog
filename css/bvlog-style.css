@@ -237,6 +237,39 @@ h1 {
 
 /* --- Roster list --- */
 
+.roster-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 20px;
+  border-bottom: 1px solid #334155;
+  padding-bottom: 8px;
+}
+
+.roster-tab {
+  padding: 8px 14px;
+  border: 1px solid #475569;
+  border-radius: 999px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.roster-tab:hover,
+.roster-tab.active {
+  border-color: #60a5fa;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.directory-form {
+  margin-bottom: 4px;
+}
+
+.opponent-directory-list {
+  max-width: 720px;
+}
+
 .roster-list {
   list-style: none;
   padding: 0;

@@ -16,6 +16,11 @@ const STORAGE_KEYS = {
   GAMES_COMPRESSED: 'bvlog_games_compressed',
   ACTIVE_GAMES: 'bvlog_active_games',
   DELETED_GAMES: 'bvlog_deleted_games',
+  OPPONENT_TEAMS: 'bvlog_opponent_teams',
+  OPPONENT_PAIRS: 'bvlog_opponent_pairs',
+  LOGGED_BY: 'bvlog_logged_by',
+  DELETED_OPPONENT_TEAMS: 'bvlog_deleted_opponent_teams',
+  DELETED_OPPONENT_PAIRS: 'bvlog_deleted_opponent_pairs',
 };
 
 // Game logs can grow beyond the browser's roughly 5 MB localStorage limit.
@@ -370,13 +375,183 @@ function findPlayerById(playerId) {
 }
 
 // ----------------------------
+// Opponent and logger directories
+// ----------------------------
+
+function normalizeDirectoryName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function uniqueDirectoryNames(values) {
+  const byKey = new Map();
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = normalizeDirectoryName(value);
+    if (!normalized) continue;
+    const key = normalized.toLocaleLowerCase();
+    if (!byKey.has(key)) byKey.set(key, normalized);
+  }
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function loadDirectoryNames(storageKey, legacyValues = []) {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (raw !== null) {
+      const parsed = JSON.parse(raw);
+      return uniqueDirectoryNames(parsed);
+    }
+
+    // Seed new directories once from existing games so installations that
+    // already have history do not lose their established opponents/loggers.
+    const seeded = uniqueDirectoryNames(legacyValues);
+    localStorage.setItem(storageKey, JSON.stringify(seeded));
+    return seeded;
+  } catch (error) {
+    console.error(`Could not load directory ${storageKey}:`, error);
+    return uniqueDirectoryNames(legacyValues);
+  }
+}
+
+function saveDirectoryNames(storageKey, values) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(uniqueDirectoryNames(values)));
+    return true;
+  } catch (error) {
+    console.error(`Could not save directory ${storageKey}:`, error);
+    return false;
+  }
+}
+
+function deletedDirectoryKey(storageKey) {
+  if (storageKey === STORAGE_KEYS.OPPONENT_TEAMS) return STORAGE_KEYS.DELETED_OPPONENT_TEAMS;
+  if (storageKey === STORAGE_KEYS.OPPONENT_PAIRS) return STORAGE_KEYS.DELETED_OPPONENT_PAIRS;
+  return null;
+}
+
+function loadDeletedDirectoryNames(storageKey) {
+  const deletedKey = deletedDirectoryKey(storageKey);
+  if (!deletedKey) return [];
+  try {
+    const raw = localStorage.getItem(deletedKey);
+    return uniqueDirectoryNames(raw ? JSON.parse(raw) : []);
+  } catch (error) {
+    console.error(`Could not load deleted directory ${deletedKey}:`, error);
+    return [];
+  }
+}
+
+function saveDeletedDirectoryNames(storageKey, values) {
+  const deletedKey = deletedDirectoryKey(storageKey);
+  if (!deletedKey) return true;
+  try {
+    localStorage.setItem(deletedKey, JSON.stringify(uniqueDirectoryNames(values)));
+    return true;
+  } catch (error) {
+    console.error(`Could not save deleted directory ${deletedKey}:`, error);
+    return false;
+  }
+}
+
+function syncDirectoryNamesWithGames(storageKey, names, gameValues) {
+  const deleted = new Set(loadDeletedDirectoryNames(storageKey).map((value) => value.toLocaleLowerCase()));
+  const visibleGameValues = (Array.isArray(gameValues) ? gameValues : [])
+    .filter((value) => !deleted.has(normalizeDirectoryName(value).toLocaleLowerCase()));
+  const merged = uniqueDirectoryNames([...(names || []), ...visibleGameValues]);
+  if (JSON.stringify(merged) !== JSON.stringify(uniqueDirectoryNames(names))) {
+    saveDirectoryNames(storageKey, merged);
+  }
+  return merged;
+}
+
+function loadOpponentTeams() {
+  const games = loadGameHistory();
+  return syncDirectoryNamesWithGames(
+    STORAGE_KEYS.OPPONENT_TEAMS,
+    loadDirectoryNames(STORAGE_KEYS.OPPONENT_TEAMS),
+    games.map((game) => game?.opponentTeam),
+  );
+}
+
+function loadOpponentPairs() {
+  const games = loadGameHistory();
+  return syncDirectoryNamesWithGames(
+    STORAGE_KEYS.OPPONENT_PAIRS,
+    loadDirectoryNames(STORAGE_KEYS.OPPONENT_PAIRS),
+    games.map((game) => game?.opponentPair || game?.opponentName),
+  );
+}
+
+function loadLoggedByValues() {
+  const games = loadGameHistory();
+  return syncDirectoryNamesWithGames(
+    STORAGE_KEYS.LOGGED_BY,
+    loadDirectoryNames(STORAGE_KEYS.LOGGED_BY),
+    games.map((game) => game?.loggedBy),
+  );
+}
+
+function addDirectoryName(storageKey, value, legacyValues = []) {
+  const normalized = normalizeDirectoryName(value);
+  if (!normalized) return null;
+  const names = loadDirectoryNames(storageKey, legacyValues);
+  const existing = names.find((name) => name.toLocaleLowerCase() === normalized.toLocaleLowerCase());
+  const deleted = loadDeletedDirectoryNames(storageKey)
+    .filter((name) => name.toLocaleLowerCase() !== normalized.toLocaleLowerCase());
+  if (existing) {
+    saveDeletedDirectoryNames(storageKey, deleted);
+    return existing;
+  }
+  if (!saveDirectoryNames(storageKey, [...names, normalized])) return null;
+  saveDeletedDirectoryNames(storageKey, deleted);
+  return normalized;
+}
+
+function deleteDirectoryName(storageKey, value, legacyValues = []) {
+  const normalized = normalizeDirectoryName(value);
+  if (!normalized) return false;
+  const names = loadDirectoryNames(storageKey, legacyValues);
+  const next = names.filter((name) => name.toLocaleLowerCase() !== normalized.toLocaleLowerCase());
+  if (next.length === names.length || !saveDirectoryNames(storageKey, next)) return false;
+  saveDeletedDirectoryNames(storageKey, [...loadDeletedDirectoryNames(storageKey), normalized]);
+  return true;
+}
+
+function rememberGameDirectoryValues(game) {
+  if (!game) return;
+  if (game.opponentTeam) addOpponentTeam(game.opponentTeam);
+  if (game.opponentPair || game.opponentName) addOpponentPair(game.opponentPair || game.opponentName);
+  if (game.loggedBy) addLoggedBy(game.loggedBy);
+}
+
+function addOpponentTeam(name) {
+  return addDirectoryName(STORAGE_KEYS.OPPONENT_TEAMS, name);
+}
+
+function addOpponentPair(name) {
+  return addDirectoryName(STORAGE_KEYS.OPPONENT_PAIRS, name);
+}
+
+function addLoggedBy(name) {
+  return addDirectoryName(STORAGE_KEYS.LOGGED_BY, name);
+}
+
+function deleteOpponentTeam(name) {
+  return deleteDirectoryName(STORAGE_KEYS.OPPONENT_TEAMS, name);
+}
+
+function deleteOpponentPair(name) {
+  return deleteDirectoryName(STORAGE_KEYS.OPPONENT_PAIRS, name);
+}
+
+// ----------------------------
 // Game history
 // ----------------------------
 // Games are saved as a flat list, newest-last on disk — sort by
 // `date` wherever you display a history list. Saving is an upsert
 // (match by id): save after every point for local crash safety, but
-// only sync live event changes to the cloud when the game is paused
-// or completed. New games and completed-game edits sync immediately.
+// Game writes are kept local first for crash safety, then schedule a cloud
+// push after every successful mutation when cloud sync is configured. The
+// debounce in scheduleCloudSync() coalesces rapid point-by-point edits.
 
 // A deletion tombstone is kept separately from the visible game list. This
 // is important for cloud sync: an empty local list cannot tell another device
@@ -581,8 +756,9 @@ function getGameCloudMetadata(game) {
 }
 
 // Upserts a single game into history (replaces it by id, otherwise appends)
-// and persists locally. Live event-only saves stay local; pass { sync: true }
-// for an explicit pause/completion boundary.
+// and persists locally. Every successful game mutation schedules a cloud push;
+// callers may still pass { sync: true } to force the durable history path for
+// boundaries and other explicit sync points.
 function saveGame(game, options = {}) {
   if (!game?.id) {
     lastStorageWriteError = 'The new game did not receive a valid ID.';
@@ -616,15 +792,12 @@ function saveGame(game, options = {}) {
     : saveActiveGame(game);
   if (!saved) return false;
   gameHistoryCache = games;
+  if (index === -1) rememberGameDirectoryValues(game);
 
-  const shouldSync = Boolean(
-    options.sync
-    || index === -1
-    || previousGame?.isComplete
-    || game.isComplete
-    || metadataChanged
-  );
-  if (shouldSync && typeof scheduleCloudSync === 'function') scheduleCloudSync();
+  // Do this for event edits too. In particular, many edit paths mutate the
+  // cached game object before saveGame() runs, so comparing the old and new
+  // metadata cannot reliably detect every change.
+  if (typeof scheduleCloudSync === 'function') scheduleCloudSync();
   return true;
 }
 
@@ -716,7 +889,7 @@ function removeCheckedPointNumber(game, pointNumber) {
 
 // Merges imported players and games into local storage. Existing games with
 // the same id are updated only after the caller has confirmed the import.
-function mergeImportedData(games, players = []) {
+function mergeImportedData(games, players = [], directories = {}) {
   if (!Array.isArray(games) || games.length === 0) return null;
 
   const roster = loadRoster();
@@ -755,6 +928,15 @@ function mergeImportedData(games, players = []) {
   if (added + updated === 0) return null;
   if (!saveRoster(roster)) return null;
   if (!saveGameHistory(history)) return null;
+  for (const value of Array.isArray(directories.opponentTeams) ? directories.opponentTeams : []) {
+    addOpponentTeam(value);
+  }
+  for (const value of Array.isArray(directories.opponentPairs) ? directories.opponentPairs : []) {
+    addOpponentPair(value);
+  }
+  for (const value of Array.isArray(directories.loggedBy) ? directories.loggedBy : []) {
+    addLoggedBy(value);
+  }
   return { added, updated };
 }
 
@@ -934,7 +1116,9 @@ function updateGameDetails(gameId, details) {
     ...(game.setStartingActions || {}),
     1: startingAction,
   };
-  return saveGame(game);
+  const saved = saveGame(game);
+  if (saved) rememberGameDirectoryValues(game);
+  return saved;
 }
 
 // Changes the opening serve/receive choice before Set 1 has any logged

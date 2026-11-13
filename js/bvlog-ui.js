@@ -130,7 +130,7 @@ function renderHomeScreen() {
   actions.className = 'home-actions';
 
   const destinations = [
-    ['Roster', 'Manage active and archived players.', 'roster'],
+    ['Roster / Opponents', 'Manage players, opponent teams, and opponent pairs.', 'roster'],
     ['New Game', 'Start tracking a new match.', 'newGame'],
     ['History', 'Browse, filter, and review games.', 'history'],
     ['Player Stats', 'View individual player performance.', 'playerStats'],
@@ -486,7 +486,7 @@ function renderCloudSyncScreen() {
 // Roster screen
 // ----------------------------
 
-function renderRosterScreen() {
+function renderRosterScreen(activeTab = 'roster') {
   clearApp();
   appEl.appendChild(renderNavBar('roster'));
 
@@ -494,8 +494,32 @@ function renderRosterScreen() {
   container.className = 'screen roster-screen';
 
   const title = document.createElement('h1');
-  title.textContent = 'Roster';
+  title.textContent = 'Roster / Opponents';
   container.appendChild(title);
+
+  const tabs = document.createElement('div');
+  tabs.className = 'roster-tabs';
+  const tabDefinitions = [
+    ['Roster', 'roster'],
+    ['Opponent Teams', 'opponentTeam'],
+    ['Opponent Pairs', 'opponentPair'],
+  ];
+  for (const [label, tab] of tabDefinitions) {
+    const tabButton = document.createElement('button');
+    tabButton.type = 'button';
+    tabButton.className = `roster-tab${activeTab === tab ? ' active' : ''}`;
+    tabButton.textContent = label;
+    tabButton.setAttribute('aria-selected', String(activeTab === tab));
+    tabButton.addEventListener('click', () => navigate('roster', tab));
+    tabs.appendChild(tabButton);
+  }
+  container.appendChild(tabs);
+
+  if (activeTab === 'opponentTeam' || activeTab === 'opponentPair') {
+    renderOpponentDirectoryTab(container, activeTab);
+    appEl.appendChild(container);
+    return;
+  }
 
   // --- Add player form ---
   const form = document.createElement('form');
@@ -574,6 +598,85 @@ function renderRosterScreen() {
   }
 
   appEl.appendChild(container);
+}
+
+function renderOpponentDirectoryTab(container, directoryType) {
+  const isTeam = directoryType === 'opponentTeam';
+  const label = isTeam ? 'Opponent Team' : 'Opponent Pair';
+  const loadValues = isTeam ? loadOpponentTeams : loadOpponentPairs;
+  const addValue = isTeam ? addOpponentTeam : addOpponentPair;
+  const deleteValue = isTeam ? deleteOpponentTeam : deleteOpponentPair;
+
+  const subtitle = document.createElement('p');
+  subtitle.className = 'empty-state';
+  subtitle.textContent = `Add or delete ${label.toLocaleLowerCase()} names used in game setup. Deleting a name here does not change historical games.`;
+  container.appendChild(subtitle);
+
+  const form = document.createElement('form');
+  form.className = 'add-player-form directory-form';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = `${label} name`;
+  input.setAttribute('aria-label', `New ${label.toLocaleLowerCase()} name`);
+  const addButton = document.createElement('button');
+  addButton.type = 'submit';
+  addButton.textContent = `Add ${label}`;
+  form.appendChild(input);
+  form.appendChild(addButton);
+  container.appendChild(form);
+
+  const errorMsg = document.createElement('p');
+  errorMsg.className = 'error-msg';
+  errorMsg.hidden = true;
+  container.appendChild(errorMsg);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const value = input.value.trim();
+    if (!value) {
+      errorMsg.textContent = `Enter a ${label.toLocaleLowerCase()} name before adding.`;
+      errorMsg.hidden = false;
+      return;
+    }
+    if (!addValue(value)) {
+      errorMsg.textContent = `Could not save that ${label.toLocaleLowerCase()} — try again.`;
+      errorMsg.hidden = false;
+      return;
+    }
+    renderRosterScreen(directoryType);
+  });
+
+  const values = loadValues();
+  const list = document.createElement('ul');
+  list.className = 'roster-list opponent-directory-list';
+  if (values.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'empty-state';
+    empty.textContent = `No ${label.toLocaleLowerCase()}s yet.`;
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const value of values) {
+    const row = document.createElement('li');
+    row.className = 'roster-row';
+    const name = document.createElement('span');
+    name.className = 'player-name';
+    name.textContent = value;
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'delete-btn';
+    deleteButton.textContent = 'Delete';
+    deleteButton.addEventListener('click', () => {
+      if (!confirm(`Delete ${value}? Historical games will be preserved.`)) return;
+      if (deleteValue(value)) renderRosterScreen(directoryType);
+      else alert(`Could not delete that ${label.toLocaleLowerCase()} — try again.`);
+    });
+    row.appendChild(name);
+    row.appendChild(deleteButton);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
 }
 
 // One <li> per player: name (click to rename) + an archive/restore button.
@@ -716,27 +819,29 @@ function renderGameSetupScreen() {
   // Default to two different players when possible.
   if (roster.length > 1) selectB.selectedIndex = 1;
 
-  const fieldOpponentTeam = document.createElement('label');
-  fieldOpponentTeam.textContent = 'Opponent Team';
-  const opponentTeamInput = document.createElement('input');
-  opponentTeamInput.type = 'text';
-  opponentTeamInput.required = true;
-  fieldOpponentTeam.appendChild(opponentTeamInput);
-
-  const fieldOpponentPair = document.createElement('label');
-  fieldOpponentPair.textContent = 'Opponent Pair';
-  const opponentPairInput = document.createElement('input');
-  opponentPairInput.type = 'text';
-  opponentPairInput.required = true;
-  fieldOpponentPair.appendChild(opponentPairInput);
+  const opponentTeamField = makeOpponentSelectField(
+    'Opponent Team',
+    loadOpponentTeams(),
+    '',
+    true,
+    addOpponentTeam,
+  );
+  const opponentPairField = makeOpponentSelectField(
+    'Opponent Pair',
+    loadOpponentPairs(),
+    '',
+    true,
+    addOpponentPair,
+  );
 
   // --- Person entering the match ---
-  const fieldLoggedBy = document.createElement('label');
-  fieldLoggedBy.textContent = 'Logged by';
-  const loggedByInput = document.createElement('input');
-  loggedByInput.type = 'text';
-  loggedByInput.required = true;
-  fieldLoggedBy.appendChild(loggedByInput);
+  const loggedByField = makeOpponentSelectField(
+    'Logged by',
+    loadLoggedByValues(),
+    '',
+    true,
+    addLoggedBy,
+  );
 
   // --- Date the match was actually played ---
   const fieldPlayedDate = document.createElement('label');
@@ -757,9 +862,9 @@ function renderGameSetupScreen() {
 
   form.appendChild(fieldA);
   form.appendChild(fieldB);
-  form.appendChild(fieldOpponentTeam);
-  form.appendChild(fieldOpponentPair);
-  form.appendChild(fieldLoggedBy);
+  form.appendChild(opponentTeamField.field);
+  form.appendChild(opponentPairField.field);
+  form.appendChild(loggedByField.field);
   form.appendChild(fieldPlayedDate);
   form.appendChild(errorMsg);
   form.appendChild(submitBtn);
@@ -769,9 +874,9 @@ function renderGameSetupScreen() {
 
     const playerAId = selectA.value;
     const playerBId = selectB.value;
-    const opponentTeam = opponentTeamInput.value.trim();
-    const opponentPair = opponentPairInput.value.trim();
-    const loggedBy = loggedByInput.value.trim();
+    const opponentTeam = opponentTeamField.select.value.trim();
+    const opponentPair = opponentPairField.select.value.trim();
+    const loggedBy = loggedByField.select.value.trim();
     const playedDate = playedDateInput.value;
 
     if (playerAId === playerBId) {
@@ -779,18 +884,18 @@ function renderGameSetupScreen() {
       errorMsg.hidden = false;
       return;
     }
-    if (!opponentTeam) {
-      errorMsg.textContent = 'Enter an opponent team.';
+    if (!opponentTeam || opponentTeam === NEW_OPPONENT_OPTION) {
+      errorMsg.textContent = 'Choose an opponent team.';
       errorMsg.hidden = false;
       return;
     }
-    if (!opponentPair) {
-      errorMsg.textContent = 'Enter an opponent pair.';
+    if (!opponentPair || opponentPair === NEW_OPPONENT_OPTION) {
+      errorMsg.textContent = 'Choose an opponent pair.';
       errorMsg.hidden = false;
       return;
     }
-    if (!loggedBy) {
-      errorMsg.textContent = 'Enter the name of the person logging the game.';
+    if (!loggedBy || loggedBy === NEW_OPPONENT_OPTION) {
+      errorMsg.textContent = 'Choose the person logging the game.';
       errorMsg.hidden = false;
       return;
     }
@@ -1835,14 +1940,19 @@ function opponentOptionValues(games, field) {
   return [...values.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
-function makeOpponentSelectField(labelText, values, currentValue = '', allowNew = false) {
+function makeOpponentSelectField(labelText, values, currentValue = '', allowNew = false, onCreate = null) {
   const field = document.createElement('label');
   field.className = 'history-filter-field';
   field.textContent = labelText;
 
   const select = document.createElement('select');
   select.appendChild(new Option(`Select ${labelText}`, ''));
-  for (const value of values) select.appendChild(new Option(value, value));
+  const normalizedValues = [...values];
+  if (currentValue && !normalizedValues.some((value) =>
+    value.toLocaleLowerCase() === currentValue.toLocaleLowerCase())) {
+    normalizedValues.push(currentValue);
+  }
+  for (const value of normalizedValues) select.appendChild(new Option(value, value));
   if (allowNew) select.appendChild(new Option('Add new…', NEW_OPPONENT_OPTION));
   select.value = currentValue || '';
 
@@ -1860,8 +1970,13 @@ function makeOpponentSelectField(labelText, values, currentValue = '', allowNew 
       );
       if (existing) select.value = existing.value;
       else {
-        select.insertBefore(new Option(value, value), select.options[select.options.length - 1]);
-        select.value = value;
+        const created = onCreate ? onCreate(value) : value;
+        if (!created) {
+          select.value = currentValue || '';
+          return;
+        }
+        select.insertBefore(new Option(created, created), select.options[select.options.length - 1]);
+        select.value = created;
       }
     });
   }
@@ -1928,6 +2043,9 @@ function exportFullBackup() {
     exportedAt: new Date().toISOString(),
     players: loadRoster(),
     games: loadGameHistory(),
+    opponentTeams: loadOpponentTeams(),
+    opponentPairs: loadOpponentPairs(),
+    loggedBy: loadLoggedByValues(),
   };
   const datePart = new Date().toISOString().slice(0, 10);
   downloadTextFile(
@@ -2208,7 +2326,7 @@ function summarizeImport(games) {
   return { added, updated: games.length - added };
 }
 
-function importPreparedData(games, players, sourceLabel) {
+function importPreparedData(games, players, sourceLabel, directories = {}) {
   const normalizedGames = games.map(normalizeImportedGame).filter(Boolean);
   if (normalizedGames.length === 0) {
     alert(`No valid games were found in the ${sourceLabel} file.`);
@@ -2224,7 +2342,7 @@ function importPreparedData(games, players, sourceLabel) {
   );
   if (!confirmed) return false;
 
-  const result = mergeImportedData(normalizedGames, players);
+  const result = mergeImportedData(normalizedGames, players, directories);
   if (!result) {
     alert('The backup could not be imported. No changes were saved.');
     return false;
@@ -2248,7 +2366,11 @@ async function importJsonBackupFile(file) {
             ? [payload]
             : [];
     const players = Array.isArray(payload?.players) ? payload.players : [];
-    importPreparedData(games, players, 'JSON');
+    importPreparedData(games, players, 'JSON', {
+      opponentTeams: payload?.opponentTeams,
+      opponentPairs: payload?.opponentPairs,
+      loggedBy: payload?.loggedBy,
+    });
   } catch (error) {
     console.error('JSON backup import failed:', error);
     alert('That JSON file could not be read. Choose a BVlog JSON backup file.');
@@ -2776,26 +2898,28 @@ function renderGameDetailsEditScreen(gameId) {
   addPlayerOptions(selectA, game.playerAId, 'A');
   addPlayerOptions(selectB, game.playerBId, 'B');
 
-  const editOpponentGames = loadGameHistory();
   const opponentTeamField = makeOpponentSelectField(
     'Opponent Team',
-    opponentOptionValues(editOpponentGames, 'team'),
+    loadOpponentTeams(),
     opponentTeamForGame(game),
     true,
+    addOpponentTeam,
   );
   const opponentPairField = makeOpponentSelectField(
     'Opponent Pair',
-    opponentOptionValues(editOpponentGames, 'pair'),
+    loadOpponentPairs(),
     opponentPairForGame(game),
     true,
+    addOpponentPair,
   );
 
-  const fieldLoggedBy = document.createElement('label');
-  fieldLoggedBy.textContent = 'Logged by';
-  const loggedByInput = document.createElement('input');
-  loggedByInput.type = 'text';
-  loggedByInput.value = game.loggedBy || '';
-  fieldLoggedBy.appendChild(loggedByInput);
+  const loggedByField = makeOpponentSelectField(
+    'Logged by',
+    loadLoggedByValues(),
+    game.loggedBy || '',
+    true,
+    addLoggedBy,
+  );
 
   const fieldPlayedDate = document.createElement('label');
   fieldPlayedDate.textContent = 'Match Date';
@@ -2828,7 +2952,7 @@ function renderGameDetailsEditScreen(gameId) {
   form.appendChild(fieldB);
   form.appendChild(opponentTeamField.field);
   form.appendChild(opponentPairField.field);
-  form.appendChild(fieldLoggedBy);
+  form.appendChild(loggedByField.field);
   form.appendChild(fieldPlayedDate);
   form.appendChild(fieldStartingAction);
   form.appendChild(errorMsg);
@@ -2841,7 +2965,7 @@ function renderGameDetailsEditScreen(gameId) {
       playerBId: selectB.value,
       opponentTeam: opponentTeamField.select.value.trim(),
       opponentPair: opponentPairField.select.value.trim(),
-      loggedBy: loggedByInput.value.trim(),
+      loggedBy: loggedByField.select.value.trim(),
       playedDate: playedDateInput.value,
       startingAction: startingActionSelect.value,
     };

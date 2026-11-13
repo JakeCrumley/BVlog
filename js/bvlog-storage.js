@@ -165,7 +165,11 @@ function removeActiveGames(gameIds = []) {
   else saveActiveGames(remaining);
 }
 
-function persistGameHistory(games) {
+function persistGameHistory(games, options = {}) {
+  if (gameHistoryStorageWarning && !options.allowRecovery) {
+    lastStorageWriteError = 'Saved game history could not be read. Sync from the cloud or import a trusted backup before replacing local history.';
+    return false;
+  }
   const encoded = encodeGameHistory(games);
   const previousRaw = localStorage.getItem(STORAGE_KEYS.GAMES);
   const previousCompressed = localStorage.getItem(STORAGE_KEYS.GAMES_COMPRESSED);
@@ -181,6 +185,7 @@ function persistGameHistory(games) {
     if (previousRaw !== null) localStorage.removeItem(STORAGE_KEYS.GAMES);
     localStorage.removeItem(STORAGE_KEYS.ACTIVE_GAMES);
     gameHistoryCache = games;
+    gameHistoryStorageWarning = '';
     lastStorageWriteError = '';
     return true;
   } catch (error) {
@@ -198,6 +203,7 @@ function persistGameHistory(games) {
 }
 
 let lastStorageWriteError = '';
+let gameHistoryStorageWarning = '';
 let gameHistoryCache = null;
 
 if (typeof window !== 'undefined') {
@@ -225,6 +231,14 @@ function storageWriteErrorMessage(error) {
 
 function getLastStorageWriteError() {
   return lastStorageWriteError;
+}
+
+// Returns a non-blocking warning when the durable compressed history could not
+// be decoded and the loader had to fall back to legacy or active-game data.
+// The fallback is intentionally preserved so a later cloud sync can restore
+// the complete history without destroying anything locally.
+function getGameHistoryStorageWarning() {
+  return gameHistoryStorageWarning;
 }
 
 // ----------------------------
@@ -618,7 +632,9 @@ function loadGameHistory() {
     if (compressed !== null) {
       try {
         parsed = decodeGameHistory(compressed);
+        gameHistoryStorageWarning = '';
       } catch (decodeError) {
+        gameHistoryStorageWarning = 'Saved game history could not be read. Some games may be temporarily unavailable while cloud sync attempts to restore them. Do not clear this site\'s data.';
         console.error('Could not decode compressed game history; trying legacy storage:', decodeError);
       }
     }
@@ -719,12 +735,12 @@ function loadGameHistory() {
   }
 }
 
-function saveGameHistory(games, notifyCloud = true) {
+function saveGameHistory(games, notifyCloud = true, options = {}) {
   try {
     const deletedIds = new Set(loadDeletedGameTombstones().map((entry) => entry.id));
     const visibleGames = (Array.isArray(games) ? games : [])
       .filter((game) => game?.id && !deletedIds.has(game.id));
-    if (!persistGameHistory(visibleGames)) return false;
+    if (!persistGameHistory(visibleGames, options)) return false;
     if (notifyCloud && typeof scheduleCloudSync === 'function') scheduleCloudSync();
     return true;
   } catch (err) {
@@ -927,7 +943,7 @@ function mergeImportedData(games, players = [], directories = {}) {
 
   if (added + updated === 0) return null;
   if (!saveRoster(roster)) return null;
-  if (!saveGameHistory(history)) return null;
+  if (!saveGameHistory(history, true, { allowRecovery: true })) return null;
   for (const value of Array.isArray(directories.opponentTeams) ? directories.opponentTeams : []) {
     addOpponentTeam(value);
   }

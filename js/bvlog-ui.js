@@ -195,6 +195,15 @@ function renderHomeScreen() {
 // Keep these notes hard-coded here until deployment-note editing is added.
 const DEPLOY_NOTES = [
   {
+    title: 'Deployed 11/12/2026',
+    items: [
+      'Improved the Opponent Team/Pair logic',
+      'Added Opponent Team/Pair tabs in the Roster page',
+      'Added a warning for possible uncompressed data upon opening the app',
+      'Added a return-to-top function for Game Log navigation',
+    ],
+  },
+  {
     title: 'Deployed 11/4/2026',
     items: [
       'Added a Swap Sides button for in-game logging',
@@ -3032,6 +3041,22 @@ function renderHistoryScreen() {
   const inProgress = getInProgressGames();
   const completed = getCompletedGames();
   const allGames = [...inProgress, ...completed];
+
+  const storageWarning = getGameHistoryStorageWarning();
+  if (storageWarning) {
+    const warning = document.createElement('div');
+    warning.className = 'storage-recovery-warning';
+    warning.setAttribute('role', 'alert');
+
+    const warningTitle = document.createElement('strong');
+    warningTitle.textContent = 'History recovery warning';
+    warning.appendChild(warningTitle);
+
+    const warningText = document.createElement('p');
+    warningText.textContent = storageWarning;
+    warning.appendChild(warningText);
+    container.appendChild(warning);
+  }
 
   const filters = document.createElement('div');
   filters.className = 'history-filter-panel';
@@ -6648,11 +6673,18 @@ function renderSummaryGameLogs(game, nameA, nameB, scope = 'match') {
 
 function renderEventLog(game, nameA, nameB, setNumber = null, summaryScope = null) {
   const section = document.createElement('section');
-  section.className = 'summary-section';
+  section.className = 'summary-section summary-event-log';
 
   const title = document.createElement('h2');
   title.textContent = 'Chronological Event Log';
   section.appendChild(title);
+
+  const backToTopButton = makeButton('↑ Return to Game Log Top', 'game-log-back-to-top', () => {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  backToTopButton.hidden = true;
+  backToTopButton.setAttribute('aria-label', 'Return to the top of the game log');
+  section.appendChild(backToTopButton);
 
   const events = (game.events || [])
     .map((event, eventIndex) => ({ event, eventIndex }))

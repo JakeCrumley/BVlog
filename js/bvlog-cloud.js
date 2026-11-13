@@ -299,7 +299,7 @@ function applyCloudMergedData(merged) {
   try {
     saveDeletedGameTombstones(merged.deletedGames || [], false);
     saveRoster(merged.roster || []);
-    saveGameHistory(merged.games || []);
+    saveGameHistory(merged.games || [], true, { allowRecovery: true });
   } finally {
     setCloudApplySuppressed(false);
   }
@@ -925,7 +925,7 @@ async function handleCloudGameRealtime(payload) {
   if (localChanged) {
     setCloudApplySuppressed(true);
     try {
-      saveGameHistory(mergedGames);
+      saveGameHistory(mergedGames, true, { allowRecovery: true });
     } finally {
       setCloudApplySuppressed(false);
     }

@@ -57,6 +57,7 @@ function navigate(screen, param) {
   activeScreen = screen;
   activeScreenParam = param;
   render(param);
+  updateGameLogBackToTopButtons();
 }
 
 // Some screens update themselves directly from control handlers rather than
@@ -65,6 +66,21 @@ function navigate(screen, param) {
 function rememberActiveScreenParam(screen, param) {
   if (activeScreen === screen) activeScreenParam = param;
 }
+
+function updateGameLogBackToTopButtons() {
+  for (const button of document.querySelectorAll('.game-log-back-to-top')) {
+    const log = button.closest('.summary-event-log');
+    if (!log) {
+      button.hidden = true;
+      continue;
+    }
+    const bounds = log.getBoundingClientRect();
+    button.hidden = !(bounds.top < -20 && bounds.bottom > 72);
+  }
+}
+
+window.addEventListener('scroll', updateGameLogBackToTopButtons, { passive: true });
+window.addEventListener('resize', updateGameLogBackToTopButtons);
 
 // Refresh read-only screens when another connected device merges new data.
 // Live tracking is intentionally left alone so a realtime update cannot
